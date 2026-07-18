@@ -1,0 +1,849 @@
+3D查看器
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title> 3D查看器 · 贴图修复版</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #0d0d14;
+            font-family: -apple-system, 'Segoe UI', sans-serif;
+            overflow: hidden;
+            height: 100vh;
+            color: #fff;
+            touch-action: none;
+        }
+        #canvas-container {
+            width: 100vw;
+            height: 100vh;
+            display: block;
+        }
+
+        #bottom-bar {
+            position: fixed;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: calc(100% - 32px);
+            max-width: 420px;
+            background: rgba(12, 12, 28, 0.88);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border-radius: 20px;
+            padding: 14px 18px;
+            border: 1px solid rgba(255, 255, 255, 0.07);
+            box-shadow: 0 8px 40px rgba(0, 0, 0, 0.7);
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            z-index: 200;
+            align-items: center;
+        }
+        #bottom-bar .row {
+            display: flex;
+            gap: 10px;
+            width: 100%;
+        }
+        #bottom-bar button {
+            flex: 1;
+            padding: 14px 0;
+            border: none;
+            border-radius: 14px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            touch-action: manipulation;
+            letter-spacing: 0.5px;
+        }
+        #btn-load {
+            background: linear-gradient(145deg, #5b7aff, #3b5de7);
+            color: #fff;
+            box-shadow: 0 4px 16px rgba(59, 93, 231, 0.35);
+        }
+        #btn-load:active {
+            transform: scale(0.96);
+            opacity: 0.8;
+        }
+        #btn-reset {
+            background: rgba(255, 255, 255, 0.08);
+            color: #aaa;
+            flex: 0.5;
+        }
+        #btn-reset:active {
+            background: rgba(255, 255, 255, 0.15);
+        }
+        #btn-auto {
+            background: rgba(255, 255, 255, 0.08);
+            color: #aaa;
+            flex: 0.5;
+        }
+        #btn-auto.active {
+            background: rgba(91, 122, 255, 0.25);
+            color: #7c8cff;
+        }
+        #btn-auto:active {
+            background: rgba(255, 255, 255, 0.15);
+        }
+        #btn-debug {
+            background: rgba(255, 200, 50, 0.15);
+            color: #ccaa55;
+            flex: 0.4;
+            font-size: 13px;
+        }
+        #btn-debug:active {
+            background: rgba(255, 200, 50, 0.25);
+        }
+
+        #status {
+            font-size: 12px;
+            color: #888;
+            text-align: center;
+            width: 100%;
+            padding: 2px 0;
+            letter-spacing: 0.3px;
+            min-height: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        #status .dot {
+            display: inline-block;
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: #4caf50;
+            margin-right: 4px;
+        }
+        #status .dot.loading {
+            background: #ffaa44;
+            animation: pulse-dot 0.8s infinite;
+        }
+        #status .dot.error {
+            background: #f44336;
+        }
+        #status .dot.warning {
+            background: #ffaa44;
+        }
+
+        @keyframes pulse-dot {
+            0%,
+            100% {
+                opacity: 1;
+                transform: scale(1);
+            }
+            50% {
+                opacity: 0.3;
+                transform: scale(0.7);
+            }
+        }
+
+        #zip-input {
+            display: none;
+        }
+
+        #progress-wrap {
+            width: 100%;
+            height: 3px;
+            background: rgba(255, 255, 255, 0.06);
+            border-radius: 4px;
+            overflow: hidden;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        #progress-wrap.active {
+            opacity: 1;
+        }
+        #progress-bar {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg, #5b7aff, #a78bfa);
+            border-radius: 4px;
+            transition: width 0.25s ease;
+        }
+
+        #stats {
+            position: fixed;
+            top: 16px;
+            right: 16px;
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            padding: 10px 14px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-family: 'SF Mono', 'Courier New', monospace;
+            color: #8899bb;
+            line-height: 1.7;
+            z-index: 50;
+            border: 1px solid rgba(255, 255, 255, 0.04);
+            pointer-events: none;
+            min-width: 80px;
+        }
+        #stats .num {
+            color: #aabbdd;
+            font-weight: 600;
+        }
+
+        #empty-hint {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            color: rgba(255, 255, 255, 0.12);
+            font-size: 15px;
+            letter-spacing: 1px;
+            pointer-events: none;
+            z-index: 10;
+            line-height: 2;
+        }
+        #empty-hint .big {
+            font-size: 48px;
+            display: block;
+            margin-bottom: 8px;
+            opacity: 0.6;
+        }
+
+        /* ===== 贴图日志 (调试) ===== */
+        #tex-log {
+            position: fixed;
+            bottom: 110px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: calc(100% - 32px);
+            max-width: 400px;
+            max-height: 120px;
+            overflow-y: auto;
+            background: rgba(0, 0, 0, 0.75);
+            backdrop-filter: blur(8px);
+            border-radius: 12px;
+            padding: 10px 14px;
+            font-size: 11px;
+            font-family: monospace;
+            color: #88bb88;
+            z-index: 150;
+            display: none;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            line-height: 1.6;
+            pointer-events: none;
+        }
+        #tex-log.show {
+            display: block;
+        }
+        #tex-log .ok {
+            color: #66dd88;
+        }
+        #tex-log .fail {
+            color: #ff6666;
+        }
+        #tex-log .info {
+            color: #88aadd;
+        }
+
+        @media (max-width: 480px) {
+            #bottom-bar {
+                bottom: 20px;
+                padding: 12px 14px;
+                border-radius: 16px;
+            }
+            #bottom-bar button {
+                padding: 12px 0;
+                font-size: 14px;
+                border-radius: 12px;
+            }
+            #stats {
+                font-size: 10px;
+                padding: 8px 12px;
+                top: 12px;
+                right: 12px;
+            }
+            #empty-hint .big {
+                font-size: 36px;
+            }
+            #tex-log {
+                bottom: 100px;
+                max-height: 80px;
+                font-size: 10px;
+                padding: 8px 12px;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <div id="canvas-container"></div>
+
+    <div id="empty-hint">
+        <span class="big"></span>
+        选择 .zip 压缩包加载<br />
+        <span style="font-size:12px;opacity:0.5;">包含 .obj + .mtl + 纹理</span>
+    </div>
+
+    <div id="stats">
+        🧩 <span class="num" id="poly-count">0</span><br />
+         <span class="num" id="tri-count">0</span>
+    </div>
+
+    <div id="tex-log"></div>
+
+    <div id="bottom-bar">
+        <div class="row">
+            <button id="btn-load"> 选择 ZIP</button>
+            <button id="btn-auto"> 旋转</button>
+            <button id="btn-reset">⟲ 重置</button>
+            <button id="btn-debug"> 贴图</button>
+        </div>
+        <div id="progress-wrap">
+            <div id="progress-bar"></div>
+        </div>
+        <div id="status">
+            <span class="dot"></span>
+            <span id="status-text">就绪，点击下方加载</span>
+        </div>
+    </div>
+
+    <input type="file" id="zip-input" accept=".zip" />
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.163.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.163.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        // ============================================================
+        //  模块导入
+        // ============================================================
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+
+        // ============================================================
+        //  DOM 引用
+        // ============================================================
+        const container = document.getElementById('canvas-container');
+        const zipInput = document.getElementById('zip-input');
+        const btnLoad = document.getElementById('btn-load');
+        const btnReset = document.getElementById('btn-reset');
+        const btnAuto = document.getElementById('btn-auto');
+        const btnDebug = document.getElementById('btn-debug');
+        const statusText = document.getElementById('status-text');
+        const statusDot = document.querySelector('#status .dot');
+        const progressWrap = document.getElementById('progress-wrap');
+        const progressBar = document.getElementById('progress-bar');
+        const polyCountEl = document.getElementById('poly-count');
+        const triCountEl = document.getElementById('tri-count');
+        const emptyHint = document.getElementById('empty-hint');
+        const texLog = document.getElementById('tex-log');
+
+        let texLogEntries = [];
+
+        function logTex(msg, type = 'info') {
+            texLogEntries.push({ msg, type });
+            // 只保留最新20条
+            if (texLogEntries.length > 20) texLogEntries.shift();
+            renderTexLog();
+        }
+
+        function renderTexLog() {
+            texLog.innerHTML = texLogEntries.map(e =>
+                `<div class="${e.type}">${e.msg}</div>`
+            ).join('');
+            texLog.scrollTop = texLog.scrollHeight;
+        }
+
+        // ============================================================
+        //  Three.js 场景
+        // ============================================================
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x0d0d14);
+
+        const camera = new THREE.PerspectiveCamera(40, container.clientWidth / container.clientHeight, 0.1, 500);
+        camera.position.set(4, 3, 6);
+
+        const renderer = new THREE.WebGLRenderer({
+            antialias: true,
+            powerPreference: 'high-performance',
+        });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.2;
+        container.appendChild(renderer.domElement);
+
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.08;
+        controls.minDistance = 0.5;
+        controls.maxDistance = 150;
+        controls.target.set(0, 0, 0);
+        controls.update();
+
+        // ---- 灯光 ----
+        const ambient = new THREE.AmbientLight(0x40406b, 0.6);
+        scene.add(ambient);
+
+        const main = new THREE.DirectionalLight(0xffeedd, 1.8);
+        main.position.set(8, 12, 6);
+        scene.add(main);
+
+        const fill = new THREE.DirectionalLight(0x4488ff, 0.6);
+        fill.position.set(-6, 4, -8);
+        scene.add(fill);
+
+        const rim = new THREE.DirectionalLight(0xffaa66, 0.4);
+        rim.position.set(0, -6, 10);
+        scene.add(rim);
+
+        const hemi = new THREE.HemisphereLight(0x6699ff, 0x443366, 0.5);
+        scene.add(hemi);
+
+        const grid = new THREE.GridHelper(8, 16, 0x445577, 0x223355);
+        grid.position.y = -0.5;
+        scene.add(grid);
+
+        // ============================================================
+        //  状态
+        // ============================================================
+        let currentModel = null;
+        let autoRotate = false;
+        let isLoading = false;
+
+        // ============================================================
+        //  工具
+        // ============================================================
+        function setStatus(msg, type = 'idle') {
+            statusText.textContent = msg;
+            statusDot.className = 'dot';
+            if (type === 'loading') statusDot.classList.add('loading');
+            if (type === 'error') statusDot.classList.add('error');
+            if (type === 'warning') statusDot.classList.add('warning');
+        }
+
+        function setProgress(pct) {
+            if (pct < 0) {
+                progressWrap.classList.remove('active');
+                return;
+            }
+            progressWrap.classList.add('active');
+            progressBar.style.width = Math.min(pct, 100) + '%';
+        }
+
+        function updateStats(model) {
+            if (!model) {
+                polyCountEl.textContent = '0';
+                triCountEl.textContent = '0';
+                return;
+            }
+            let verts = 0,
+                tris = 0;
+            model.traverse(child => {
+                if (child.isMesh && child.geometry) {
+                    const g = child.geometry;
+                    if (g.index) {
+                        tris += g.index.count / 3;
+                    } else if (g.attributes.position) {
+                        tris += g.attributes.position.count / 3;
+                    }
+                    if (g.attributes.position) {
+                        verts += g.attributes.position.count;
+                    }
+                }
+            });
+            polyCountEl.textContent = Math.round(verts).toLocaleString();
+            triCountEl.textContent = Math.round(tris).toLocaleString();
+        }
+
+        function disposeModel(model) {
+            if (!model) return;
+            model.traverse(child => {
+                if (child.isMesh) {
+                    child.geometry?.dispose();
+                    if (Array.isArray(child.material)) {
+                        child.material.forEach(m => m.dispose());
+                    } else {
+                        child.material?.dispose();
+                    }
+                }
+            });
+            scene.remove(model);
+        }
+
+        // ============================================================
+        //  动态加载 JSZip
+        // ============================================================
+        function loadJSZip() {
+            return new Promise((resolve, reject) => {
+                if (window.JSZip) {
+                    resolve();
+                    return;
+                }
+                const script = document.createElement('script');
+                script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+                script.onload = () => resolve();
+                script.onerror = () => reject(new Error('JSZip 加载失败，请检查网络'));
+                document.head.appendChild(script);
+            });
+        }
+
+        async function unzipFile(file) {
+            await loadJSZip();
+            const data = await file.arrayBuffer();
+            const zip = await window.JSZip.loadAsync(data);
+            const result = {};
+
+            for (const name in zip.files) {
+                const entry = zip.files[name];
+                if (entry.dir) continue;
+                const lower = name.toLowerCase();
+                if (lower.endsWith('.obj') || lower.endsWith('.mtl')) {
+                    result[name] = await entry.async('text');
+                } else if (/\.(jpg|jpeg|png|bmp|tga|webp|dds)$/.test(lower)) {
+                    const blob = await entry.async('blob');
+                    result[name] = URL.createObjectURL(blob);
+                }
+            }
+            return result;
+        }
+
+        // ============================================================
+        //   核心：智能匹配纹理 (加强版)
+        // ============================================================
+        function findTextureSmart(mtlTexName, texMap, allTexNames) {
+            // 清理路径
+            let clean = mtlTexName.replace(/^.*[\\\/]/, '').trim();
+            // 去掉可能带引号
+            clean = clean.replace(/^["']|["']$/g, '');
+            const lower = clean.toLowerCase();
+
+            // 1. 精确匹配
+            if (texMap[lower]) return texMap[lower];
+            if (texMap[clean]) return texMap[clean];
+
+            // 2. 去掉扩展名匹配
+            const baseNoExt = lower.replace(/\.[^.]+$/, '');
+            for (const key in texMap) {
+                const keyBase = key.replace(/^.*[\\\/]/, '').toLowerCase().replace(/\.[^.]+$/, '');
+                if (keyBase === baseNoExt) {
+                    logTex(`✅ 匹配: "${clean}" → "${key}"`, 'ok');
+                    return texMap[key];
+                }
+            }
+
+            // 3. 模糊匹配 (包含关系)
+            for (const key in texMap) {
+                const keyBase = key.replace(/^.*[\\\/]/, '').toLowerCase();
+                if (keyBase.includes(baseNoExt) || baseNoExt.includes(keyBase.replace(/\.[^.]+$/, ''))) {
+                    logTex(` 模糊匹配: "${clean}" → "${key}"`, 'ok');
+                    return texMap[key];
+                }
+            }
+
+            // 4. 如果纹理名是数字或简单名，尝试找唯一纹理
+            if (allTexNames.length === 1) {
+                logTex(` 只有一张贴图，直接使用`, 'ok');
+                return texMap[allTexNames[0]];
+            }
+
+            logTex(`❌ 未找到: "${clean}"`, 'fail');
+            return null;
+        }
+
+        // ============================================================
+        //  加载 ZIP
+        // ============================================================
+        async function loadZip(file) {
+            if (isLoading) return;
+            isLoading = true;
+            texLogEntries = [];
+            renderTexLog();
+            setStatus('解压中...', 'loading');
+            setProgress(10);
+
+            try {
+                const files = await unzipFile(file);
+                setProgress(40);
+
+                let objText = null;
+                let mtlText = null;
+                const texMap = {};
+                const allTexNames = [];
+
+                for (const name in files) {
+                    const lower = name.toLowerCase();
+                    const value = files[name];
+                    if (lower.endsWith('.obj')) {
+                        objText = value;
+                    } else if (lower.endsWith('.mtl')) {
+                        mtlText = value;
+                    } else if (typeof value === 'string' && value.startsWith('blob:')) {
+                        const base = name.split(/[\\\/]/).pop();
+                        texMap[base] = value;
+                        texMap[lower] = value;
+                        texMap[base.toLowerCase()] = value;
+                        texMap[lower.toLowerCase()] = value;
+                        allTexNames.push(base);
+                        logTex(` 纹理: ${base}`, 'info');
+                    }
+                }
+
+                if (!objText) {
+                    setStatus('❌ ZIP 中没有 .obj 文件', 'error');
+                    isLoading = false;
+                    setProgress(-1);
+                    return;
+                }
+
+                setStatus('解析模型...', 'loading');
+                setProgress(50);
+
+                const loader = new OBJLoader();
+                const obj = loader.parse(objText);
+
+                // ---- 解析 MTL ----
+                let matCount = 0;
+                let texMatched = 0;
+                if (mtlText) {
+                    const result = parseMTLWithLog(mtlText, texMap, allTexNames);
+                    const mats = result.materials;
+                    texMatched = result.matched;
+                    matCount = Object.keys(mats).length;
+                    applyMaterials(obj, mats);
+                }
+
+                setProgress(80);
+
+                // ---- 居中 ----
+                const box = new THREE.Box3().setFromObject(obj);
+                const center = box.getCenter(new THREE.Vector3());
+                const size = box.getSize(new THREE.Vector3());
+                obj.position.sub(center);
+
+                const maxDim = Math.max(size.x, size.y, size.z);
+                const dist = Math.max(maxDim * 1.8, 1.5);
+                camera.position.set(dist * 0.7, dist * 0.5, dist);
+                controls.target.set(0, 0, 0);
+                controls.update();
+
+                disposeModel(currentModel);
+                scene.add(obj);
+                currentModel = obj;
+
+                updateStats(obj);
+                setProgress(100);
+
+                const texStatus = texMatched > 0 ? `✅ ${texMatched}张贴图` : '⚠️ 无贴图';
+                setStatus(`✅ ${matCount}材质 · ${texStatus}`, texMatched > 0 ? 'idle' : 'warning');
+                emptyHint.style.display = 'none';
+
+                if (texMatched === 0 && allTexNames.length > 0) {
+                    logTex(`⚠️ 有 ${allTexNames.length} 张贴图但未匹配，尝试手动匹配`, 'fail');
+                }
+
+                setTimeout(() => setProgress(-1), 800);
+
+            } catch (err) {
+                console.error(err);
+                setStatus('❌ ' + err.message, 'error');
+                setProgress(-1);
+            }
+
+            isLoading = false;
+        }
+
+        // ============================================================
+        //  解析 MTL (带日志)
+        // ============================================================
+        function parseMTLWithLog(text, texMap, allTexNames) {
+            const mats = {};
+            const lines = text.split(/\r?\n/);
+            let current = null;
+            let matched = 0;
+
+            for (const raw of lines) {
+                const line = raw.trim();
+                if (!line || line.startsWith('#')) continue;
+                const parts = line.split(/\s+/);
+                const cmd = parts[0];
+
+                if (cmd === 'newmtl') {
+                    const name = parts.slice(1).join(' ');
+                    current = name;
+                    mats[name] = new THREE.MeshStandardMaterial({
+                        name: name,
+                        roughness: 0.6,
+                        metalness: 0.1,
+                        color: 0xccccdd,
+                    });
+                } else if (cmd === 'Kd' && current) {
+                    const r = parseFloat(parts[1]);
+                    const g = parseFloat(parts[2]);
+                    const b = parseFloat(parts[3]);
+                    if (!isNaN(r + g + b)) {
+                        mats[current].color.setRGB(r, g, b);
+                    }
+                } else if (cmd === 'Ns' && current) {
+                    const val = parseFloat(parts[1]);
+                    if (!isNaN(val)) {
+                        mats[current].roughness = Math.max(0, 1 - val / 1000);
+                    }
+                } else if (cmd === 'd' && current) {
+                    const val = parseFloat(parts[1]);
+                    if (!isNaN(val)) {
+                        mats[current].opacity = val;
+                        mats[current].transparent = val < 1;
+                    }
+                } else if (cmd === 'map_Kd' && current) {
+                    const texName = parts.slice(1).join(' ');
+                    const match = findTextureSmart(texName, texMap, allTexNames);
+                    if (match) {
+                        const tex = new THREE.TextureLoader().load(match);
+                        tex.colorSpace = THREE.SRGBColorSpace;
+                        mats[current].map = tex;
+                        mats[current].needsUpdate = true;
+                        matched++;
+                        logTex(` ${current} → 贴图已应用`, 'ok');
+                    } else {
+                        logTex(`⚠️ ${current} → 贴图缺失: ${texName}`, 'fail');
+                    }
+                } else if ((cmd === 'map_bump' || cmd === 'bump') && current) {
+                    const texName = parts.slice(1).join(' ');
+                    const match = findTextureSmart(texName, texMap, allTexNames);
+                    if (match) {
+                        const tex = new THREE.TextureLoader().load(match);
+                        mats[current].bumpMap = tex;
+                        mats[current].bumpScale = 0.5;
+                        mats[current].needsUpdate = true;
+                        matched++;
+                    }
+                } else if (cmd === 'map_Ks' && current) {
+                    // 高光贴图 -> 粗糙度贴图 (近似)
+                    const texName = parts.slice(1).join(' ');
+                    const match = findTextureSmart(texName, texMap, allTexNames);
+                    if (match) {
+                        const tex = new THREE.TextureLoader().load(match);
+                        mats[current].roughnessMap = tex;
+                        mats[current].needsUpdate = true;
+                        matched++;
+                    }
+                }
+            }
+
+            return { materials: mats, matched };
+        }
+
+        function applyMaterials(obj, mats) {
+            obj.traverse(child => {
+                if (child.isMesh) {
+                    const oldMat = child.material;
+                    let matName = null;
+                    if (oldMat) {
+                        matName = oldMat.name || oldMat.uuid;
+                    }
+                    if (matName && mats[matName]) {
+                        child.material = mats[matName];
+                    } else {
+                        // 尝试匹配材质名 (去除数字后缀等)
+                        for (const key in mats) {
+                            if (matName && (key.includes(matName) || matName.includes(key))) {
+                                child.material = mats[key];
+                                break;
+                            }
+                        }
+                        // 如果还没匹配，用第一个
+                        if (!child.material || child.material === oldMat) {
+                            const keys = Object.keys(mats);
+                            if (keys.length > 0) {
+                                child.material = mats[keys[0]];
+                            }
+                        }
+                    }
+                    if (child.material) child.material.needsUpdate = true;
+                }
+            });
+        }
+
+        // ============================================================
+        //  事件
+        // ============================================================
+        btnLoad.addEventListener('click', () => {
+            zipInput.click();
+        });
+
+        zipInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                loadZip(e.target.files[0]);
+            }
+            zipInput.value = '';
+        });
+
+        btnReset.addEventListener('click', () => {
+            if (currentModel) {
+                const box = new THREE.Box3().setFromObject(currentModel);
+                const size = box.getSize(new THREE.Vector3());
+                const maxDim = Math.max(size.x, size.y, size.z);
+                const dist = Math.max(maxDim * 1.8, 1.5);
+                camera.position.set(dist * 0.7, dist * 0.5, dist);
+                controls.target.set(0, 0, 0);
+                controls.update();
+            } else {
+                camera.position.set(4, 3, 6);
+                controls.target.set(0, 0, 0);
+                controls.update();
+            }
+            setStatus('视角已重置', 'idle');
+        });
+
+        btnAuto.addEventListener('click', () => {
+            autoRotate = !autoRotate;
+            controls.autoRotate = autoRotate;
+            controls.autoRotateSpeed = 2.0;
+            btnAuto.classList.toggle('active');
+            btnAuto.textContent = autoRotate ? '⏸ 暂停' : ' 旋转';
+        });
+
+        // ---- 贴图调试按钮 ----
+        btnDebug.addEventListener('click', () => {
+            texLog.classList.toggle('show');
+            btnDebug.textContent = texLog.classList.contains('show') ? ' 隐藏' : ' 贴图';
+        });
+
+        // ============================================================
+        //  自适应
+        // ============================================================
+        window.addEventListener('resize', () => {
+            const w = container.clientWidth;
+            const h = container.clientHeight;
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+        });
+
+        // ============================================================
+        //  动画
+        // ============================================================
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        setStatus(' 选择 ZIP 压缩包加载', 'idle');
+        console.log(' 手机版3D查看器 (贴图修复版)');
+        console.log(' 点击 "贴图" 查看纹理匹配日志');
+    </script>
+</body>
+</html>
