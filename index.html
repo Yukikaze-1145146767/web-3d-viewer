@@ -1,4 +1,3 @@
-3D查看器
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -329,6 +328,8 @@
         import * as THREE from 'three';
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
         import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+        import { TGALoader } from 'three/addons/loaders/TGALoader.js';
+        import { DDSLoader } from 'three/addons/loaders/DDSLoader.js';
 
         // ============================================================
         //  DOM 引用
@@ -421,6 +422,20 @@
         let autoRotate = false;
         let isLoading = false;
 
+        // 当前模型引用的 blob URL，切换模型时统一 revoke
+        let activeBlobUrls = [];
+        // blob URL → { name, ext }，用于按扩展名选择纹理解码器
+        const blobUrlMeta = new Map();
+        // 按需渲染：只有视角或场景变化时才重绘
+        let needsRender = true;
+        const invalidate = () => { needsRender = true; };
+
+        const MAX_ZIP_BYTES = 300 * 1024 * 1024;
+        const MAX_UNZIP_BYTES = 600 * 1024 * 1024;
+
+        // 视角变化时触发重绘
+        controls.addEventListener('change', invalidate);
+
         // ============================================================
         //  工具
         // ============================================================
@@ -466,56 +481,133 @@
             triCountEl.textContent = Math.round(tris).toLocaleString();
         }
 
+        const TEXTURE_SLOTS = ['map', 'bumpMap', 'normalMap', 'specularMap',
+            'roughnessMap', 'metalnessMap', 'emissiveMap', 'aoMap', 'alphaMap'];
+
+        // material.dispose() 不会连带释放贴图，需要逐个 dispose
+        function disposeMaterial(mat) {
+            if (!mat) return;
+            for (const slot of TEXTURE_SLOTS) {
+                const tex = mat[slot];
+                if (tex && typeof tex.dispose === 'function') {
+                    tex.dispose();
+                    mat[slot] = null;
+                }
+            }
+            if (typeof mat.dispose === 'function') mat.dispose();
+        }
+
         function disposeModel(model) {
             if (!model) return;
             model.traverse(child => {
-                if (child.isMesh) {
-                    child.geometry?.dispose();
-                    if (Array.isArray(child.material)) {
-                        child.material.forEach(m => m.dispose());
-                    } else {
-                        child.material?.dispose();
-                    }
-                }
+                if (!child.isMesh) return;
+                child.geometry?.dispose();
+                const mats = Array.isArray(child.material) ? child.material : [child.material];
+                for (const m of mats) disposeMaterial(m);
             });
             scene.remove(model);
+        }
+
+        function revokeBlobUrls(urls) {
+            for (const url of urls) {
+                URL.revokeObjectURL(url);
+                blobUrlMeta.delete(url);
+            }
         }
 
         // ============================================================
         //  动态加载 JSZip
         // ============================================================
-        function loadJSZip() {
+        const JSZIP_CDNS = [
+            'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js',
+            'https://unpkg.com/jszip@3.10.1/dist/jszip.min.js',
+            'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js',
+        ];
+
+        function loadScriptFromAny(urls) {
             return new Promise((resolve, reject) => {
-                if (window.JSZip) {
-                    resolve();
-                    return;
-                }
-                const script = document.createElement('script');
-                script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
-                script.onload = () => resolve();
-                script.onerror = () => reject(new Error('JSZip 加载失败，请检查网络'));
-                document.head.appendChild(script);
+                const tryNext = (i) => {
+                    if (i >= urls.length) {
+                        reject(new Error('JSZip 加载失败：所有 CDN 均不可达'));
+                        return;
+                    }
+                    const script = document.createElement('script');
+                    script.src = urls[i];
+                    script.onload = () => resolve();
+                    script.onerror = () => {
+                        script.remove();
+                        tryNext(i + 1);
+                    };
+                    document.head.appendChild(script);
+                };
+                tryNext(0);
             });
         }
+
+        function loadJSZip() {
+            if (window.JSZip) return Promise.resolve();
+            return loadScriptFromAny(JSZIP_CDNS);
+        }
+
+        const TEXTURE_EXT_RE = /\.(jpg|jpeg|png|bmp|webp|gif|tga|dds)$/;
 
         async function unzipFile(file) {
             await loadJSZip();
             const data = await file.arrayBuffer();
             const zip = await window.JSZip.loadAsync(data);
-            const result = {};
+            const files = {};
+            const urls = [];
+            let totalBytes = 0;
 
-            for (const name in zip.files) {
-                const entry = zip.files[name];
-                if (entry.dir) continue;
-                const lower = name.toLowerCase();
-                if (lower.endsWith('.obj') || lower.endsWith('.mtl')) {
-                    result[name] = await entry.async('text');
-                } else if (/\.(jpg|jpeg|png|bmp|tga|webp|dds)$/.test(lower)) {
-                    const blob = await entry.async('blob');
-                    result[name] = URL.createObjectURL(blob);
+            try {
+                for (const name in zip.files) {
+                    const entry = zip.files[name];
+                    if (entry.dir) continue;
+                    const lower = name.toLowerCase();
+                    if (lower.endsWith('.obj') || lower.endsWith('.mtl')) {
+                        files[name] = await entry.async('text');
+                    } else if (TEXTURE_EXT_RE.test(lower)) {
+                        const blob = await entry.async('blob');
+                        totalBytes += blob.size;
+                        if (totalBytes > MAX_UNZIP_BYTES) {
+                            throw new Error(`解压后纹理体积超过 ${MAX_UNZIP_BYTES / 1024 / 1024} MB，已中止`);
+                        }
+                        const url = URL.createObjectURL(blob);
+                        urls.push(url);
+                        blobUrlMeta.set(url, { name, ext: lower.split('.').pop() });
+                        files[name] = url;
+                    }
                 }
+            } catch (err) {
+                revokeBlobUrls(urls);
+                throw err;
             }
-            return result;
+
+            return { files, urls };
+        }
+
+        // 按扩展名选择解码器：浏览器原生只能解 jpg/png/webp/bmp/gif，tga 和 dds 需要专用 loader
+        function loadTextureByUrl(url) {
+            const meta = blobUrlMeta.get(url);
+            const ext = meta ? meta.ext : '';
+
+            const onLoad = (tex) => {
+                const img = tex && tex.image;
+                if (img && img.width) {
+                    const maxTex = renderer.capabilities.maxTextureSize;
+                    if (Math.max(img.width, img.height) > maxTex) {
+                        logTex(`⚠️ ${meta ? meta.name : '纹理'} 尺寸 ${img.width}×${img.height} 超过设备上限 ${maxTex}，已关闭 mipmap`, 'fail');
+                        tex.generateMipmaps = false;
+                        tex.minFilter = THREE.LinearFilter;
+                        tex.needsUpdate = true;
+                    }
+                }
+                invalidate();
+            };
+
+            if (ext === 'tga') return new TGALoader().load(url, onLoad);
+            if (ext === 'dds') return new DDSLoader().load(url, onLoad);
+            return new THREE.TextureLoader().load(url, onLoad);
         }
 
         // ============================================================
@@ -566,14 +658,22 @@
         // ============================================================
         async function loadZip(file) {
             if (isLoading) return;
+
+            if (file.size > MAX_ZIP_BYTES) {
+                setStatus(`ZIP 超过 ${MAX_ZIP_BYTES / 1024 / 1024} MB，请精简后再试`, 'error');
+                return;
+            }
+
             isLoading = true;
             texLogEntries = [];
             renderTexLog();
             setStatus('解压中...', 'loading');
             setProgress(10);
 
+            let pending = null;
             try {
-                const files = await unzipFile(file);
+                pending = await unzipFile(file);
+                const files = pending.files;
                 setProgress(40);
 
                 let objText = null;
@@ -585,6 +685,7 @@
                     const lower = name.toLowerCase();
                     const value = files[name];
                     if (lower.endsWith('.obj')) {
+                        if (objText) logTex(`ZIP 内有多个 .obj，使用最后一个: ${name}`, 'fail');
                         objText = value;
                     } else if (lower.endsWith('.mtl')) {
                         mtlText = value;
@@ -601,6 +702,7 @@
 
                 if (!objText) {
                     setStatus('❌ ZIP 中没有 .obj 文件', 'error');
+                    revokeBlobUrls(pending.urls);
                     isLoading = false;
                     setProgress(-1);
                     return;
@@ -634,12 +736,20 @@
                 const maxDim = Math.max(size.x, size.y, size.z);
                 const dist = Math.max(maxDim * 1.8, 1.5);
                 camera.position.set(dist * 0.7, dist * 0.5, dist);
+                // 按模型尺寸调整裁剪面与缩放范围，避免大模型被 far 裁掉
+                camera.near = Math.max(dist / 1000, 0.01);
+                camera.far = dist * 100;
+                camera.updateProjectionMatrix();
+                controls.maxDistance = dist * 10;
                 controls.target.set(0, 0, 0);
                 controls.update();
 
                 disposeModel(currentModel);
+                revokeBlobUrls(activeBlobUrls);
+                activeBlobUrls = pending.urls;
                 scene.add(obj);
                 currentModel = obj;
+                invalidate();
 
                 updateStats(obj);
                 setProgress(100);
@@ -656,6 +766,7 @@
 
             } catch (err) {
                 console.error(err);
+                if (pending) revokeBlobUrls(pending.urls);
                 setStatus('❌ ' + err.message, 'error');
                 setProgress(-1);
             }
@@ -709,7 +820,7 @@
                     const texName = parts.slice(1).join(' ');
                     const match = findTextureSmart(texName, texMap, allTexNames);
                     if (match) {
-                        const tex = new THREE.TextureLoader().load(match);
+                        const tex = loadTextureByUrl(match);
                         tex.colorSpace = THREE.SRGBColorSpace;
                         mats[current].map = tex;
                         mats[current].needsUpdate = true;
@@ -722,7 +833,7 @@
                     const texName = parts.slice(1).join(' ');
                     const match = findTextureSmart(texName, texMap, allTexNames);
                     if (match) {
-                        const tex = new THREE.TextureLoader().load(match);
+                        const tex = loadTextureByUrl(match);
                         mats[current].bumpMap = tex;
                         mats[current].bumpScale = 0.5;
                         mats[current].needsUpdate = true;
@@ -733,7 +844,7 @@
                     const texName = parts.slice(1).join(' ');
                     const match = findTextureSmart(texName, texMap, allTexNames);
                     if (match) {
-                        const tex = new THREE.TextureLoader().load(match);
+                        const tex = loadTextureByUrl(match);
                         mats[current].roughnessMap = tex;
                         mats[current].needsUpdate = true;
                         matched++;
@@ -770,7 +881,12 @@
                             }
                         }
                     }
-                    if (child.material) child.material.needsUpdate = true;
+                    if (child.material && child.material !== oldMat) {
+                        disposeMaterial(oldMat);
+                        child.material.needsUpdate = true;
+                    } else if (child.material) {
+                        child.material.needsUpdate = true;
+                    }
                 }
             });
         }
@@ -804,6 +920,7 @@
                 controls.update();
             }
             setStatus('视角已重置', 'idle');
+            invalidate();
         });
 
         btnAuto.addEventListener('click', () => {
@@ -829,6 +946,7 @@
             camera.aspect = w / h;
             camera.updateProjectionMatrix();
             renderer.setSize(w, h);
+            invalidate();
         });
 
         // ============================================================
@@ -836,7 +954,10 @@
         // ============================================================
         function animate() {
             requestAnimationFrame(animate);
-            controls.update();
+            // damping 未结束时 update() 返回 true，需要继续重绘
+            const changed = controls.update();
+            if (!changed && !needsRender) return;
+            needsRender = false;
             renderer.render(scene, camera);
         }
         animate();
