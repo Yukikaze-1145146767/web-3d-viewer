@@ -34,13 +34,17 @@
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
             font-size: 13px;
             overflow: hidden;
-            touch-action: none;
             -webkit-font-smoothing: antialiased;
         }
 
         /* ---------- canvas ---------- */
         #canvas-container { position: fixed; inset: 0; }
-        #canvas-container canvas { display: block; }
+        #canvas-container canvas { display: block; touch-action: none; }
+        dialog { margin: auto; padding: 20px; max-width: 90vw; color: var(--fg); background: var(--panel); border: 1px solid var(--line-hi); }
+        dialog select { display: block; max-width: 75vw; margin: 16px 0; }
+        dialog button { padding: 8px 14px; margin-right: 8px; }
+        dialog::backdrop { background: #0009; }
+        .btn:disabled { opacity: .5; cursor: wait; }
         body.dragging::after {
             content: '';
             position: fixed;
@@ -314,7 +318,7 @@
                 </svg>
             </button>
         </div>
-        <div id="status">
+        <div id="status" role="status" aria-live="polite">
             <span class="dot"></span>
             <span id="status-text">就绪</span>
         </div>
@@ -377,13 +381,12 @@
             document.body.appendChild(box);
         }
 
-        let THREE, OrbitControls, OBJLoader, TGALoader, DDSLoader;
+        let THREE, OrbitControls, OBJLoader, MTLLoader, TGALoader, DDSLoader;
         try {
-            THREE = await import('three');
-            ({ OrbitControls } = await import('three/addons/controls/OrbitControls.js'));
-            ({ OBJLoader } = await import('three/addons/loaders/OBJLoader.js'));
-            ({ TGALoader } = await import('three/addons/loaders/TGALoader.js'));
-            ({ DDSLoader } = await import('three/addons/loaders/DDSLoader.js'));
+            [THREE, { OrbitControls }, { OBJLoader }, { MTLLoader }] = await Promise.all([
+                import('three'), import('three/addons/controls/OrbitControls.js'),
+                import('three/addons/loaders/OBJLoader.js'), import('three/addons/loaders/MTLLoader.js'),
+            ]);
         } catch (err) {
             showFatalLoad(err);
             throw err;
@@ -459,8 +462,7 @@
         const renderer = new THREE.WebGLRenderer({
             antialias: true,
             powerPreference: 'high-performance',
-            // 截图要读回画布内容，必须保留绘制缓冲
-            preserveDrawingBuffer: true,
+            preserveDrawingBuffer: false,
         });
         renderer.setSize(container.clientWidth, container.clientHeight);
         renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -506,28 +508,17 @@
         let autoRotate = false;
         let isLoading = false;
 
-        // 当前模型引用的 blob URL，切换模型时统一 revoke
-        let activeBlobUrls = [];
+        let activeResources = null;
         // blob URL → { name, ext }，用于按扩展名选择纹理解码器
         const blobUrlMeta = new Map();
         // 按需渲染：只有视角或场景变化时才重绘
         let needsRender = true;
-        const invalidate = () => { needsRender = true; };
-
-        // ---- 环境光照：PBR 材质没有 envMap 时金属与高光会发死 ----
-        (async () => {
-            try {
-                const { RoomEnvironment } = await import('three/addons/environments/RoomEnvironment.js');
-                const pmrem = new THREE.PMREMGenerator(renderer);
-                const envRT = pmrem.fromScene(new RoomEnvironment(renderer), 0.04);
-                scene.environment = envRT.texture;
-                scene.environmentIntensity = 0.45;
-                pmrem.dispose();
-                invalidate();
-            } catch (e) {
-                console.warn('环境贴图加载失败，已跳过：', e);
-            }
-        })();
+        let frame = 0;
+        let lastFrameTime = null;
+        const invalidate = () => {
+            needsRender = true;
+            if (!frame && !document.hidden) frame = requestAnimationFrame(animate);
+        };
 
         const MAX_ZIP_BYTES = 300 * 1024 * 1024;
         const MAX_UNZIP_BYTES = 600 * 1024 * 1024;
@@ -597,7 +588,7 @@
             for (const slot of TEXTURE_SLOTS) {
                 const tex = mat[slot];
                 if (tex && typeof tex.dispose === 'function') {
-                    releaseTexture(tex);
+                    tex.dispose();
                     mat[slot] = null;
                 }
             }
@@ -606,12 +597,15 @@
 
         function disposeModel(model) {
             if (!model) return;
+            const materials = new Set();
+            const geometries = new Set();
             model.traverse(child => {
-                if (!child.isMesh) return;
-                child.geometry?.dispose();
+                if (child.geometry) geometries.add(child.geometry);
                 const mats = Array.isArray(child.material) ? child.material : [child.material];
-                for (const m of mats) disposeMaterial(m);
+                for (const m of mats) if (m) materials.add(m);
             });
+            for (const geometry of geometries) geometry.dispose();
+            for (const material of materials) disposeMaterial(material);
             scene.remove(model);
         }
 
@@ -658,154 +652,108 @@
 
         const TEXTURE_EXT_RE = /\.(jpg|jpeg|png|bmp|webp|gif|tga|dds)$/;
 
+        function normalizePath(path) {
+            const result = [];
+            for (const part of path.replace(/\\/g, '/').split('/')) {
+                if (!part || part === '.') continue;
+                if (part === '..') result.pop();
+                else result.push(part);
+            }
+            return result.join('/');
+        }
+
+        function resolveAsset(reference, parent, names) {
+            const clean = reference.trim().replace(/^["']|["']$/g, '');
+            const relative = normalizePath(parent.slice(0, parent.lastIndexOf('/') + 1) + clean);
+            if (names.includes(relative)) return relative;
+            const folded = names.filter(name => name.toLowerCase() === relative.toLowerCase());
+            if (folded.length === 1) return folded[0];
+            const base = normalizePath(clean).split('/').pop().toLowerCase();
+            const candidates = names.filter(name => name.split('/').pop().toLowerCase() === base);
+            if (candidates.length === 1) return candidates[0];
+            throw new Error(candidates.length > 1 ? `资源路径有歧义：${reference}` : `资源缺失：${reference}`);
+        }
+
+        function releaseResources(resources) {
+            if (!resources) return;
+            for (const material of resources.materials) disposeMaterial(material);
+            for (const texture of resources.textures) texture.dispose();
+            revokeBlobUrls(resources.urls);
+            resources.materials.clear();
+            resources.textures.clear();
+            resources.decoded.clear();
+        }
+
         async function unzipFile(file, onProgress) {
             await loadJSZip();
             const data = await file.arrayBuffer();
             const zip = await window.JSZip.loadAsync(data);
-            const files = {};
-            const urls = [];
+            const files = new Map();
+            const resources = { urls: [], materials: new Set(), textures: new Set(), decoded: new Map(), pixels: 0 };
             let totalBytes = 0;
-
             const names = Object.keys(zip.files).filter(n => !zip.files[n].dir);
-            let done = 0;
-
-            try {
-                for (const name of names) {
-                    const entry = zip.files[name];
-                    if (entry.dir) continue;
-                    const lower = name.toLowerCase();
-                    if (lower.endsWith('.obj') || lower.endsWith('.mtl')) {
-                        files[name] = await entry.async('text');
-                    } else if (TEXTURE_EXT_RE.test(lower)) {
-                        const blob = await entry.async('blob');
-                        totalBytes += blob.size;
-                        if (totalBytes > MAX_UNZIP_BYTES) {
-                            throw new Error(`解压后纹理体积超过 ${MAX_UNZIP_BYTES / 1024 / 1024} MB，已中止`);
+            if (names.length > 10000) throw new Error('ZIP 文件数量超过 10000');
+            for (const name of names) {
+                const normalized = normalizePath(name);
+                if (files.has(normalized)) throw new Error(`ZIP 路径重复：${normalized}`);
+                files.set(normalized, zip.files[name]);
+            }
+            const read = async (name, text = false) => {
+                const entry = files.get(name);
+                if (!entry) throw new Error(`资源缺失：${name}`);
+                const limit = 128 * 1024 * 1024;
+                const chunks = [];
+                let size = 0;
+                await new Promise((resolve, reject) => {
+                    const stream = entry.internalStream('uint8array');
+                    stream.on('data', chunk => {
+                        size += chunk.length;
+                        totalBytes += chunk.length;
+                        if (size > limit || totalBytes > MAX_UNZIP_BYTES) {
+                            stream.pause();
+                            reject(new Error(`解压资源超限：${name}（单文件 128 MiB，总量 600 MiB）`));
+                            return;
                         }
-                        const url = URL.createObjectURL(blob);
-                        urls.push(url);
-                        blobUrlMeta.set(url, { name, ext: lower.split('.').pop() });
-                        files[name] = url;
-                    }
-                    done++;
-                    if (onProgress) onProgress(done / names.length);
-                }
-            } catch (err) {
-                revokeBlobUrls(urls);
-                throw err;
-            }
-
-            return { files, urls };
-        }
-
-        // 按扩展名选择解码器：浏览器原生只能解 jpg/png/webp/bmp/gif，tga 和 dds 需要专用 loader
-        // key -> { tex, refs }：同一张图只解码一次
-        // 键包含色彩空间：同一张图作为基色（sRGB）和法线/高度（线性）引用时不能共用一个 Texture
-        const texturePool = new Map();
-
-        function loadTextureByUrl(url, srgb = true) {
-            const key = url + (srgb ? '|s' : '|l');
-            const cached = texturePool.get(key);
-            if (cached) {
-                cached.refs++;
-                return cached.tex;
-            }
-
-            // 同一张图已按另一种色彩空间加载过：clone 一份共享 image，不重复解码
-            for (const [k, rec] of texturePool) {
-                if (k.startsWith(url + '|')) {
-                    const copy = rec.tex.clone();
-                    copy.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
-                    copy.needsUpdate = true;
-                    texturePool.set(key, { tex: copy, refs: 1 });
-                    return copy;
-                }
-            }
-
-            const meta = blobUrlMeta.get(url);
-            const ext = meta ? meta.ext : '';
-
-            const onLoad = (tex) => {
-                const img = tex && tex.image;
-                if (img && img.width) {
-                    const maxTex = renderer.capabilities.maxTextureSize;
-                    if (Math.max(img.width, img.height) > maxTex) {
-                        logTex(`${meta ? meta.name : '纹理'} 尺寸 ${img.width}×${img.height} 超过设备上限 ${maxTex}，已关闭 mipmap`, 'fail');
-                        tex.generateMipmaps = false;
-                        tex.minFilter = THREE.LinearFilter;
-                        tex.needsUpdate = true;
-                    }
-                }
-                invalidate();
+                        chunks.push(chunk);
+                    }).on('error', reject).on('end', resolve).resume();
+                });
+                onProgress?.(Math.min(totalBytes / MAX_UNZIP_BYTES, 1));
+                const blob = new Blob(chunks);
+                if (text) return blob.text();
+                const url = URL.createObjectURL(blob);
+                resources.urls.push(url);
+                blobUrlMeta.set(url, { name, ext: name.toLowerCase().split('.').pop() });
+                return url;
             };
-
-            let tex;
-            if (ext === 'tga') tex = new TGALoader().load(url, onLoad);
-            else if (ext === 'dds') tex = new DDSLoader().load(url, onLoad);
-            else tex = new THREE.TextureLoader().load(url, onLoad);
-
-            tex.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
-            texturePool.set(key, { tex, refs: 1 });
-            return tex;
+            return { files, resources, read };
         }
 
-        // 引用计数归零才真正释放，避免多个材质共用贴图时被提前销毁
-        function releaseTexture(tex) {
-            if (!tex) return;
-            for (const [url, rec] of texturePool) {
-                if (rec.tex === tex) {
-                    rec.refs--;
-                    if (rec.refs <= 0) {
-                        tex.dispose();
-                        texturePool.delete(url);
-                    }
-                    return;
+        async function decodeTexture(name, archive) {
+            const { resources } = archive;
+            if (resources.decoded.has(name)) return resources.decoded.get(name);
+            const promise = (async () => {
+                const url = await archive.read(name);
+                const ext = blobUrlMeta.get(url).ext;
+                if (ext === 'tga' && !TGALoader) ({ TGALoader } = await import('three/addons/loaders/TGALoader.js'));
+                if (ext === 'dds' && !DDSLoader) ({ DDSLoader } = await import('three/addons/loaders/DDSLoader.js'));
+                const loader = ext === 'tga' ? new TGALoader() : ext === 'dds' ? new DDSLoader() : new THREE.TextureLoader();
+                let texture;
+                try {
+                    texture = await loader.loadAsync(url);
+                } catch (error) {
+                    throw new Error(`贴图解码失败：${name}${error?.message ? `（${error.message}）` : ''}`);
                 }
-            }
-            if (typeof tex.dispose === 'function') tex.dispose();
-        }
-
-        // ============================================================
-        //   核心：智能匹配纹理 (加强版)
-        // ============================================================
-        function findTextureSmart(mtlTexName, texMap, allTexNames) {
-            // 清理路径
-            let clean = mtlTexName.replace(/^.*[\\\/]/, '').trim();
-            // 去掉可能带引号
-            clean = clean.replace(/^["']|["']$/g, '');
-            const lower = clean.toLowerCase();
-
-            // 1. 精确匹配
-            if (texMap[lower]) return texMap[lower];
-            if (texMap[clean]) return texMap[clean];
-
-            // 2. 去掉扩展名匹配
-            const baseNoExt = lower.replace(/\.[^.]+$/, '');
-            for (const key in texMap) {
-                const keyBase = key.replace(/^.*[\\\/]/, '').toLowerCase().replace(/\.[^.]+$/, '');
-                if (keyBase === baseNoExt) {
-                    logTex(`匹配: "${clean}" → "${key}"`, 'ok');
-                    return texMap[key];
+                resources.textures.add(texture);
+                const { width, height } = texture.image;
+                if (!width || !height || Math.max(width, height) > renderer.capabilities.maxTextureSize) {
+                    throw new Error(`纹理尺寸不受设备支持：${name} (${width}×${height})`);
                 }
-            }
-
-            // 3. 模糊匹配 (包含关系)
-            for (const key in texMap) {
-                const keyBase = key.replace(/^.*[\\\/]/, '').toLowerCase();
-                if (keyBase.includes(baseNoExt) || baseNoExt.includes(keyBase.replace(/\.[^.]+$/, ''))) {
-                    logTex(`模糊匹配: "${clean}" → "${key}"`, 'ok');
-                    return texMap[key];
-                }
-            }
-
-            // 4. 如果纹理名是数字或简单名，尝试找唯一纹理
-            if (allTexNames.length === 1) {
-                logTex(`只有一张贴图，直接使用`, 'ok');
-                return texMap[allTexNames[0]];
-            }
-
-            logTex(`未找到: "${clean}"`, 'fail');
-            return null;
+                resources.pixels += width * height;
+                if (resources.pixels > 32 * 1024 * 1024) throw new Error('纹理总像素超过 32 MiPixels，请降低贴图分辨率');
+                return texture;
+            })();
+            resources.decoded.set(name, promise);
+            return promise;
         }
 
         // ============================================================
@@ -820,8 +768,7 @@
             }
 
             isLoading = true;
-            fileNameEl.textContent = file.name;
-            fileNameEl.title = file.name;
+            btnLoad.disabled = true;
             texLogEntries = [];
             renderTexLog();
             if (file.size > 80 * 1024 * 1024) {
@@ -831,251 +778,170 @@
             setProgress(10);
 
             let pending = null;
+            let obj = null;
+            let committed = false;
             try {
-                pending = await unzipFile(file, (p) => setProgress(10 + p * 30));
-                const files = pending.files;
-                setProgress(40);
-
-                let objText = null;
-                let mtlText = null;
-                const mtlNames = [];
-                const texMap = {};
-                const allTexNames = [];
-
-                for (const name in files) {
-                    const lower = name.toLowerCase();
-                    const value = files[name];
-                    if (lower.endsWith('.obj')) {
-                        if (objText) logTex(`ZIP 内有多个 .obj，使用最后一个: ${name}`, 'fail');
-                        objText = value;
-                    } else if (lower.endsWith('.mtl')) {
-                        mtlNames.push(name);
-                        mtlText = value;
-                    } else if (typeof value === 'string' && value.startsWith('blob:')) {
-                        const base = name.split(/[\\\/]/).pop();
-                        if (texMap[base] && texMap[base] !== value) {
-                            logTex(`贴图重名：${base} 有多份，已用 ${name} 覆盖前一份`, 'fail');
-                        }
-                        texMap[base] = value;
-                        texMap[lower] = value;
-                        texMap[base.toLowerCase()] = value;
-                        texMap[lower.toLowerCase()] = value;
-                        allTexNames.push(base);
-                        logTex(`纹理: ${base}`, 'info');
-                    }
-                }
-
-                if (mtlNames.length > 1) {
-                    const used = mtlNames[mtlNames.length - 1];
-                    const ignored = mtlNames.slice(0, -1).join(', ');
-                    logTex(`ZIP 内有 ${mtlNames.length} 个 .mtl，只使用 "${used}"，已忽略: ${ignored}`, 'fail');
-                }
-
-                if (!objText) {
-                    setStatus('ZIP 中没有 .obj 文件', 'error');
-                    revokeBlobUrls(pending.urls);
-                    isLoading = false;
-                    setProgress(-1);
-                    return;
-                }
-
+                pending = await unzipFile(file);
+                const names = [...pending.files.keys()];
+                const objNames = names.filter(name => /\.obj$/i.test(name));
+                if (!objNames.length) throw new Error('ZIP 中没有 .obj 文件');
+                const objName = await chooseModel(objNames);
+                const objText = await pending.read(objName, true);
                 setStatus('解析模型...', 'loading');
-                setProgress(50);
-
-                const loader = new OBJLoader();
-                const obj = loader.parse(objText);
-
-                // ---- 解析 MTL ----
-                let matCount = 0;
-                let texMatched = 0;
-                if (mtlText) {
-                    const result = parseMTLWithLog(mtlText, texMap, allTexNames);
-                    const mats = result.materials;
-                    texMatched = result.matched;
-                    matCount = Object.keys(mats).length;
-                    applyMaterials(obj, mats);
-                }
-
+                setProgress(35);
+                await new Promise(resolve => setTimeout(resolve, 0));
+                obj = new OBJLoader().parse(objText);
+                const mats = await loadMaterials(obj, objName, pending);
+                applyMaterials(obj, mats, pending.resources);
                 setProgress(80);
-
-                // ---- 居中 ----
                 const box = new THREE.Box3().setFromObject(obj);
+                if (box.isEmpty() || ![...box.min.toArray(), ...box.max.toArray()].every(Number.isFinite)) {
+                    throw new Error('模型为空或包含无效坐标');
+                }
                 const center = box.getCenter(new THREE.Vector3());
                 const size = box.getSize(new THREE.Vector3());
                 obj.position.sub(center);
-
                 const maxDim = Math.max(size.x, size.y, size.z);
-
-                // 网格贴合模型底部（固定 y=-0.5 会插在模型中间）
                 grid.position.y = (box.min.y - center.y) - maxDim * 0.02;
-                const dist = Math.max(maxDim * 1.8, 1.5);
-                camera.position.set(dist * 0.7, dist * 0.5, dist);
-                // 按模型尺寸调整裁剪面与缩放范围，避免大模型被 far 裁掉
-                camera.near = Math.max(dist / 1000, 0.01);
-                camera.far = dist * 100;
-                camera.updateProjectionMatrix();
-                controls.maxDistance = dist * 10;
-                controls.target.set(0, 0, 0);
-                controls.update();
+                grid.scale.setScalar(Math.max(maxDim / 8, 0.001));
+                fitCamera(obj);
 
                 disposeModel(currentModel);
-                revokeBlobUrls(activeBlobUrls);
-                activeBlobUrls = pending.urls;
+                releaseResources(activeResources);
+                activeResources = pending.resources;
                 scene.add(obj);
                 currentModel = obj;
+                committed = true;
+                fileNameEl.textContent = `${file.name} / ${objName}`;
+                fileNameEl.title = fileNameEl.textContent;
                 invalidate();
 
                 updateStats(obj);
                 if (wireframe) applyWireframe(obj);
                 setProgress(100);
 
-                const texStatus = texMatched > 0 ? `${texMatched}张贴图` : '无贴图';
-                setStatus(`${matCount}材质 · ${texStatus}`, texMatched > 0 ? 'idle' : 'warning');
+                const failures = texLogEntries.filter(entry => entry.type === 'fail').length;
+                setStatus(`${mats.size} 材质 · ${pending.resources.decoded.size} 张贴图${failures ? ` · ${failures} 项警告（见日志）` : ''}`, failures ? 'warning' : 'idle');
                 emptyHint.style.display = 'none';
-
-                if (texMatched === 0 && allTexNames.length > 0) {
-                    logTex(`有 ${allTexNames.length} 张贴图但未匹配，尝试手动匹配`, 'fail');
-                }
-
-                setTimeout(() => setProgress(-1), 800);
-
             } catch (err) {
-                console.error(err);
-                if (pending) revokeBlobUrls(pending.urls);
+                if (!committed) {
+                    disposeModel(obj);
+                    releaseResources(pending?.resources);
+                }
                 setStatus('' + err.message, 'error');
+            } finally {
                 setProgress(-1);
+                isLoading = false;
+                btnLoad.disabled = false;
             }
+        }
 
-            isLoading = false;
+        function chooseModel(names) {
+            if (names.length === 1) return Promise.resolve(names[0]);
+            return new Promise((resolve, reject) => {
+                const dialog = document.createElement('dialog');
+                const title = document.createElement('p');
+                title.textContent = '选择要打开的 OBJ 模型';
+                const select = document.createElement('select');
+                select.setAttribute('aria-label', 'OBJ 模型');
+                for (const name of names) select.add(new Option(name, name));
+                const open = document.createElement('button');
+                open.textContent = '打开模型';
+                const cancel = document.createElement('button');
+                cancel.textContent = '取消';
+                const finish = (value) => {
+                    dialog.close(); dialog.remove();
+                    if (value) resolve(value); else reject(new Error('已取消加载'));
+                };
+                open.onclick = () => finish(select.value);
+                cancel.onclick = () => finish(null);
+                dialog.oncancel = event => { event.preventDefault(); finish(null); };
+                dialog.append(title, select, open, cancel);
+                document.body.append(dialog);
+                dialog.showModal();
+            });
+        }
+
+        function fitCamera(model) {
+            const sphere = new THREE.Box3().setFromObject(model).getBoundingSphere(new THREE.Sphere());
+            const radius = Math.max(sphere.radius, 0.0001);
+            const vertical = THREE.MathUtils.degToRad(camera.fov) / 2;
+            const horizontal = Math.atan(Math.tan(vertical) * camera.aspect);
+            const distance = radius / Math.sin(Math.min(vertical, horizontal)) * 1.15;
+            camera.position.copy(sphere.center).add(new THREE.Vector3(0.7, 0.5, 1).normalize().multiplyScalar(distance));
+            camera.near = radius / 1000;
+            camera.far = distance + radius * 100;
+            camera.updateProjectionMatrix();
+            controls.minDistance = radius * 0.01;
+            controls.maxDistance = distance * 10;
+            controls.target.copy(sphere.center);
+            controls.update();
+            invalidate();
         }
 
         // ============================================================
         //  解析 MTL (带日志)
         // ============================================================
-        function parseMTLWithLog(text, texMap, allTexNames) {
-            const mats = {};
-            const lines = text.split(/\r?\n/);
-            let current = null;
-            let matched = 0;
-
-            for (const raw of lines) {
-                const line = raw.trim();
-                if (!line || line.startsWith('#')) continue;
-                const parts = line.split(/\s+/);
-                const cmd = parts[0];
-
-                if (cmd === 'newmtl') {
-                    const name = parts.slice(1).join(' ');
-                    current = name;
-                    mats[name] = new THREE.MeshStandardMaterial({
-                        name: name,
-                        roughness: 0.6,
-                        metalness: 0.1,
-                        color: 0xccccdd,
-                    });
-                } else if (cmd === 'Kd' && current) {
-                    const r = parseFloat(parts[1]);
-                    const g = parseFloat(parts[2]);
-                    const b = parseFloat(parts[3]);
-                    if (!isNaN(r + g + b)) {
-                        // MTL 的 Kd 是 sRGB 值，不声明会被当线性值，模型整体发亮发白
-                        mats[current].color.setRGB(r, g, b, THREE.SRGBColorSpace);
-                    }
-                } else if (cmd === 'Ns' && current) {
-                    const val = parseFloat(parts[1]);
-                    if (!isNaN(val)) {
-                        mats[current].roughness = Math.max(0, 1 - val / 1000);
-                    }
-                } else if (cmd === 'd' && current) {
-                    const val = parseFloat(parts[1]);
-                    if (!isNaN(val)) {
-                        mats[current].opacity = val;
-                        mats[current].transparent = val < 1;
-                    }
-                } else if (cmd === 'Tr' && current) {
-                    // 老式 MTL 用 Tr 表示透明度（Tr = 1 - d）
-                    const val = parseFloat(parts[1]);
-                    if (!isNaN(val)) {
-                        const opacity = Math.max(0, Math.min(1, 1 - val));
-                        mats[current].opacity = opacity;
-                        mats[current].transparent = opacity < 1;
-                    }
-                } else if (cmd === 'map_Kd' && current) {
-                    const texName = parts.slice(1).join(' ');
-                    const match = findTextureSmart(texName, texMap, allTexNames);
-                    if (match) {
-                        const tex = loadTextureByUrl(match, true);
-                        mats[current].map = tex;
-                        mats[current].needsUpdate = true;
-                        matched++;
-                        logTex(`${current} → 贴图已应用`, 'ok');
-                    } else {
-                        logTex(`${current} → 贴图缺失: ${texName}`, 'fail');
-                    }
-                } else if ((cmd === 'map_bump' || cmd === 'bump') && current) {
-                    const texName = parts.slice(1).join(' ');
-                    const match = findTextureSmart(texName, texMap, allTexNames);
-                    if (match) {
-                        const tex = loadTextureByUrl(match, false);
-                        mats[current].bumpMap = tex;
-                        mats[current].bumpScale = 0.5;
-                        mats[current].needsUpdate = true;
-                        matched++;
-                    }
-                } else if (cmd === 'map_Ks' && current) {
-                    // 高光贴图 -> 粗糙度贴图 (近似，两者语义并不等价)
-                    const texName = parts.slice(1).join(' ');
-                    const match = findTextureSmart(texName, texMap, allTexNames);
-                    if (match) {
-                        const tex = loadTextureByUrl(match, false);
-                        mats[current].roughnessMap = tex;
-                        mats[current].needsUpdate = true;
-                        matched++;
-                        logTex(`${current} → 高光贴图已按粗糙度近似处理`, 'info');
-                    }
-                } else if ((cmd === 'norm' || cmd === 'map_Kn' || cmd === 'map_normal') && current) {
-                    // 法线贴图是数据贴图，必须保持线性色彩空间
-                    const texName = parts.slice(1).join(' ');
-                    const match = findTextureSmart(texName, texMap, allTexNames);
-                    if (match) {
-                        const tex = loadTextureByUrl(match, false);
-                        mats[current].normalMap = tex;
-                        mats[current].needsUpdate = true;
-                        matched++;
-                        logTex(`${current} → 法线贴图已应用`, 'ok');
-                    }
-                } else if ((cmd === 'map_d' || cmd === 'map_alpha') && current) {
-                    const texName = parts.slice(1).join(' ');
-                    const match = findTextureSmart(texName, texMap, allTexNames);
-                    if (match) {
-                        const tex = loadTextureByUrl(match, false);
-                        mats[current].alphaMap = tex;
-                        mats[current].transparent = true;
-                        mats[current].needsUpdate = true;
-                        matched++;
-                        logTex(`${current} → alpha 贴图已应用`, 'ok');
-                    }
-                } else if (cmd === 'Ke' && current) {
-                    const r = parseFloat(parts[1]);
-                    const g = parseFloat(parts[2]);
-                    const b = parseFloat(parts[3]);
-                    if (!isNaN(r + g + b)) {
-                        mats[current].emissive.setRGB(r, g, b, THREE.SRGBColorSpace);
-                        mats[current].emissiveIntensity = 1;
-                    }
-                } else if (cmd === 'map_Ke' && current) {
-                    const texName = parts.slice(1).join(' ');
-                    const match = findTextureSmart(texName, texMap, allTexNames);
-                    if (match) {
-                        const tex = loadTextureByUrl(match, true);
-                        mats[current].emissiveMap = tex;
-                        mats[current].needsUpdate = true;
-                        matched++;
-                    }
+        async function loadMaterials(obj, objName, archive) {
+            const names = [...archive.files.keys()];
+            const mtlNames = names.filter(name => /\.mtl$/i.test(name));
+            const textureNames = names.filter(name => TEXTURE_EXT_RE.test(name.toLowerCase()));
+            const used = new Set();
+            obj.traverse(child => {
+                const materials = Array.isArray(child.material) ? child.material : [child.material];
+                for (const material of materials) if (material?.name) used.add(material.name);
+            });
+            const mats = new Map();
+            const libraries = new Set();
+            for (const reference of obj.materialLibraries) {
+                libraries.add(resolveAsset(reference, objName, mtlNames));
+            }
+            if (!libraries.size && mtlNames.length === 1) {
+                libraries.add(mtlNames[0]);
+                logTex(`OBJ 未声明 mtllib，使用唯一材质库：${mtlNames[0]}`, 'info');
+            }
+            for (const name of libraries) {
+                const text = await archive.read(name, true);
+                const creator = new MTLLoader().parse(text.replace(/^(\S+)\t+/gm, '$1 '), '');
+                // 材质表使用无原型对象，允许 constructor 等合法材质名称。
+                creator.materials = Object.create(null);
+                const jobs = [];
+                creator.loadTexture = reference => {
+                    const texture = new THREE.Texture();
+                    archive.resources.textures.add(texture);
+                    jobs.push({ reference, texture });
+                    return texture;
+                };
+                for (const materialName of used) {
+                    if (!Object.hasOwn(creator.materialsInfo, materialName)) continue;
+                    if (mats.has(materialName)) throw new Error(`多个 MTL 定义了同名材质：${materialName}`);
+                    const info = creator.materialsInfo[materialName];
+                    info.norm ??= info.map_kn ?? info.map_normal;
+                    info.map_d ??= info.map_alpha;
+                    if (info.norm === undefined) delete info.norm;
+                    if (info.map_d === undefined) delete info.map_d;
+                    const material = creator.create(materialName);
+                    archive.resources.materials.add(material);
+                    mats.set(materialName, material);
+                }
+                // 顺序解码避免大量图片同时占用临时内存；同源纹理只解码一次。
+                for (const { reference, texture } of jobs) {
+                    const path = resolveAsset(reference, name, textureNames);
+                    setStatus(`加载贴图：${path}`, 'loading');
+                    const source = await decodeTexture(path, archive);
+                    const repeat = texture.repeat.clone(), offset = texture.offset.clone();
+                    const { colorSpace, wrapS, wrapT } = texture;
+                    texture.copy(source);
+                    if (source.isCompressedTexture) texture.isCompressedTexture = true;
+                    if (source.isDataTexture) texture.isDataTexture = true;
+                    texture.repeat.copy(repeat);
+                    texture.offset.copy(offset);
+                    Object.assign(texture, { colorSpace, wrapS, wrapT });
+                    texture.needsUpdate = true;
+                    logTex(`${name} → ${path}`, 'ok');
                 }
             }
-
-            return { materials: mats, matched };
+            return mats;
         }
 
         let wireframe = false;
@@ -1092,46 +958,36 @@
             invalidate();
         }
 
-        function applyMaterials(obj, mats) {
+        function applyMaterials(obj, mats, resources) {
             const warned = new Set();
+            const replaced = new Set();
+            const variants = new Map();
             obj.traverse(child => {
                 if (child.isMesh) {
-                    const oldMat = child.material;
-                    let matName = null;
-                    if (oldMat) {
-                        matName = oldMat.name || oldMat.uuid;
-                    }
-                    if (matName && mats[matName]) {
-                        child.material = mats[matName];
-                    } else {
-                        // 尝试匹配材质名 (去除数字后缀等)
-                        for (const key in mats) {
-                            if (matName && (key.includes(matName) || matName.includes(key))) {
-                                child.material = mats[key];
-                                break;
+                    const replace = old => {
+                        const material = mats.get(old.name);
+                        if (!material) {
+                            if (old.name && !warned.has(old.name)) {
+                                warned.add(old.name);
+                                logTex(`材质缺失：${old.name}，保留默认材质`, 'fail');
                             }
+                            return old;
                         }
-                        // 如果还没匹配，用第一个（并告警，不静默错配）
-                        if (!child.material || child.material === oldMat) {
-                            const keys = Object.keys(mats);
-                            if (keys.length > 0) {
-                                child.material = mats[keys[0]];
-                                const key = matName || '(未命名)';
-                                if (!warned.has(key)) {
-                                    warned.add(key);
-                                    logTex(`材质 "${key}" 未在 MTL 中找到，已套用第一个材质 "${keys[0]}"`, 'fail');
-                                }
-                            }
+                        const key = JSON.stringify([old.name, old.flatShading, old.vertexColors]);
+                        if (!variants.has(key)) {
+                            const variant = material.clone();
+                            variant.flatShading = old.flatShading;
+                            variant.vertexColors = old.vertexColors;
+                            resources.materials.add(variant);
+                            variants.set(key, variant);
                         }
-                    }
-                    if (child.material && child.material !== oldMat) {
-                        disposeMaterial(oldMat);
-                        child.material.needsUpdate = true;
-                    } else if (child.material) {
-                        child.material.needsUpdate = true;
-                    }
+                        replaced.add(old);
+                        return variants.get(key);
+                    };
+                    child.material = Array.isArray(child.material) ? child.material.map(replace) : replace(child.material);
                 }
             });
+            for (const material of replaced) disposeMaterial(material);
         }
 
         // ============================================================
@@ -1150,13 +1006,7 @@
 
         btnReset.addEventListener('click', () => {
             if (currentModel) {
-                const box = new THREE.Box3().setFromObject(currentModel);
-                const size = box.getSize(new THREE.Vector3());
-                const maxDim = Math.max(size.x, size.y, size.z);
-                const dist = Math.max(maxDim * 1.8, 1.5);
-                camera.position.set(dist * 0.7, dist * 0.5, dist);
-                controls.target.set(0, 0, 0);
-                controls.update();
+                fitCamera(currentModel);
             } else {
                 camera.position.set(4, 3, 6);
                 controls.target.set(0, 0, 0);
@@ -1171,6 +1021,7 @@
             controls.autoRotate = autoRotate;
             controls.autoRotateSpeed = 2.0;
             btnAuto.classList.toggle('on', autoRotate);
+            invalidate();
         });
 
         // ---- 贴图调试按钮 ----
@@ -1200,13 +1051,17 @@
                 return;
             }
             renderer.render(scene, camera);
-            const url = renderer.domElement.toDataURL('image/png');
-            const a = document.createElement('a');
-            const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-            a.download = 'web3d-' + stamp + '.png';
-            a.href = url;
-            a.click();
-            setStatus('已保存截图', 'idle');
+            renderer.domElement.toBlob(blob => {
+                if (!blob) { setStatus('截图失败', 'error'); return; }
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+                a.download = 'web3d-' + stamp + '.png';
+                a.href = url;
+                a.click();
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
+                setStatus('已生成截图', 'idle');
+            }, 'image/png');
         });
 
         // ---- 全屏 ----
@@ -1240,7 +1095,7 @@
         // ---- 快捷键 ----
         window.addEventListener('keydown', (e) => {
             const tag = (e.target && e.target.tagName) || '';
-            if (tag === 'INPUT' || tag === 'TEXTAREA' || e.metaKey || e.ctrlKey || e.altKey) return;
+            if (['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(tag) || e.target?.isContentEditable || document.querySelector('dialog[open]') || e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
             const k = e.key.toLowerCase();
             if (k === 'r') { btnReset.click(); }
             else if (k === ' ') { e.preventDefault(); btnAuto.click(); }
@@ -1266,18 +1121,55 @@
         // ============================================================
         //  动画
         // ============================================================
-        function animate() {
-            requestAnimationFrame(animate);
+        function animate(time) {
+            frame = 0;
             // damping 未结束时 update() 返回 true，需要继续重绘
-            const changed = controls.update();
-            if (!changed && !needsRender) return;
+            const delta = lastFrameTime === null ? 0 : Math.min((time - lastFrameTime) / 1000, 0.1);
+            lastFrameTime = time;
+            const changed = controls.update(delta);
+            if (!changed && !needsRender) { lastFrameTime = null; return; }
             needsRender = false;
             renderer.render(scene, camera);
+            if (changed || autoRotate) invalidate();
+            else lastFrameTime = null;
         }
-        animate();
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) { cancelAnimationFrame(frame); frame = 0; lastFrameTime = null; }
+            else invalidate();
+        });
+        controls.addEventListener('start', invalidate);
+        invalidate();
+
+        // 只读诊断接口，方便排查模型分组、贴图和 GPU 资源占用。
+        window.web3d = Object.freeze({
+            getDiagnostics() {
+                const meshes = [];
+                currentModel?.traverse(child => {
+                    if (!child.isMesh) return;
+                    const materials = Array.isArray(child.material) ? child.material : [child.material];
+                    meshes.push({
+                        name: child.name,
+                        groups: child.geometry.groups.map(group => ({ ...group })),
+                        materials: materials.map(material => ({
+                            name: material.name, type: material.type,
+                            color: material.color?.getHex(), flatShading: material.flatShading,
+                            maps: Object.fromEntries(TEXTURE_SLOTS.filter(slot => material[slot]).map(slot => {
+                                const texture = material[slot];
+                                return [slot, { colorSpace: texture.colorSpace, repeat: texture.repeat.toArray(), offset: texture.offset.toArray(), width: texture.image?.width, height: texture.image?.height, source: texture.source.uuid }];
+                            })),
+                        })),
+                    });
+                });
+                return { loading: isLoading, scheduled: !!frame, frame: renderer.info.render.frame,
+                    memory: { ...renderer.info.memory }, drawCalls: renderer.info.render.calls,
+                    blobUrls: blobUrlMeta.size, decodedTextures: activeResources?.decoded.size || 0,
+                    meshes, camera: { position: camera.position.toArray(), near: camera.near, far: camera.far, aspect: camera.aspect },
+                };
+            },
+        });
 
         setStatus('选择 ZIP 压缩包加载', 'idle');
-        console.log('[Web3D Viewer] v1.0.1 | three r163 | CDN: ' + (window.__CDN_KEY__ || 'jsdelivr'));
+        console.log('[Web3D Viewer] v1.1.0 | three r163 | CDN: ' + (window.__CDN_KEY__ || 'jsdelivr'));
         console.log(' 点击 "贴图" 查看纹理匹配日志');
     </script>
 </body>

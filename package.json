@@ -1,0 +1,12 @@
+{
+  "name": "web-3d-viewer",
+  "version": "1.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test tests/viewer.test.mjs" },
+  "devDependencies": {
+    "three": "0.163.0",
+    "jszip": "3.10.1",
+    "playwright": "1.56.1"
+  }
+}
