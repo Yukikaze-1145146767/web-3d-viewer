@@ -51,6 +51,7 @@ model.zip
 - 不支持骨骼动画与形变动画
 - 高面数模型受浏览器与设备性能限制
 - 需要联网：Three.js 与 JSZip 都走 CDN，国内网络下首次加载可能较慢
+- Three.js 默认从 jsDelivr 加载；若访问不了，在地址后加 `?cdn=unpkg` 或 `?cdn=npmmirror` 切换源（加载失败时页面也会给出可点的切换链接）
 - ZIP 上限 300 MB，解压后纹理总量上限 600 MB
 - MTL 解析覆盖常见指令（`Kd` / `Ns` / `d` / `map_Kd` / `map_bump` / `map_Ks`），不保证支持全部扩展
 
@@ -70,6 +71,10 @@ model.zip
 - Chrome / Edge 89+
 - Firefox 108+
 - Safari 16.4+
+
+## 开发日志
+
+每次版本变更的原因记录在 [CHANGELOG.md](CHANGELOG.md)。
 
 ## License
 

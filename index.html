@@ -3,7 +3,12 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title> 3D查看器 </title>
+    <title>Web3D Viewer — 单文件 OBJ 模型查看器</title>
+    <meta name="description" content="单文件 Web 端 OBJ 模型查看器：把 .obj + .mtl + 贴图打包成 ZIP，浏览器打开即可预览，带贴图匹配日志。" />
+    <meta property="og:title" content="Web3D Viewer — 单文件 OBJ 查看器" />
+    <meta property="og:description" content="Drop a ZIP with .obj + .mtl + textures and preview it in the browser. Single HTML file, no build, no backend." />
+    <meta property="og:type" content="website" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230d0d14'/%3E%3Cpath d='M32 12 52 23v18L32 52 12 41V23z' fill='none' stroke='%236699ff' stroke-width='3'/%3E%3Cpath d='M12 23l20 11 20-11M32 34v18' fill='none' stroke='%236699ff' stroke-width='2.5' opacity='.75'/%3E%3C/svg%3E" />
     <style>
         * {
             margin: 0;
@@ -312,24 +317,72 @@
 
     <input type="file" id="zip-input" accept=".zip" />
 
-    <script type="importmap">
-        {
-            "imports": {
-                "three": "https://unpkg.com/three@0.163.0/build/three.module.js",
-                "three/addons/": "https://unpkg.com/three@0.163.0/examples/jsm/"
-            }
-        }
+    <!-- Three.js 依赖源可用 ?cdn=jsdelivr|unpkg|npmmirror 切换；默认 jsDelivr -->
+    <script>
+        (function () {
+            var SOURCES = {
+                jsdelivr: 'https://cdn.jsdelivr.net/npm/three@0.163.0/',
+                unpkg: 'https://unpkg.com/three@0.163.0/',
+                npmmirror: 'https://registry.npmmirror.com/three/0.163.0/files/'
+            };
+            var ORDER = ['jsdelivr', 'unpkg', 'npmmirror'];
+            var q = new URLSearchParams(location.search).get('cdn');
+            var pick = SOURCES[q] ? q : ORDER[0];
+            window.__CDN_KEY__ = pick;
+            window.__CDN_ORDER__ = ORDER;
+            document.write(
+                '<script type="importmap">' +
+                JSON.stringify({
+                    imports: {
+                        'three': SOURCES[pick] + 'build/three.module.js',
+                        'three/addons/': SOURCES[pick] + 'examples/jsm/'
+                    }
+                }) +
+                '<\/script>'
+            );
+        })();
     </script>
 
     <script type="module">
         // ============================================================
         //  模块导入
         // ============================================================
-        import * as THREE from 'three';
-        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-        import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
-        import { TGALoader } from 'three/addons/loaders/TGALoader.js';
-        import { DDSLoader } from 'three/addons/loaders/DDSLoader.js';
+        // 动态导入：静态 import 失败时整个模块不执行、页面死寂无提示，这里换成可捕获的形式
+        function showFatalLoad(err) {
+            var cur = window.__CDN_KEY__ || 'jsdelivr';
+            var alts = (window.__CDN_ORDER__ || []).filter(function (k) { return k !== cur; });
+            var box = document.createElement('div');
+            box.style.cssText = 'position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:24px;text-align:center;background:rgba(13,13,20,.96);z-index:9999;font-size:14px;line-height:1.7;';
+            var title = document.createElement('div');
+            title.style.cssText = 'font-size:16px;font-weight:600;color:#ff8a8a;';
+            title.textContent = '❌ Three.js 加载失败';
+            var detail = document.createElement('div');
+            detail.style.cssText = 'max-width:460px;opacity:.82;';
+            detail.textContent = '当前源：' + cur + '。可能是网络无法访问该 CDN。' +
+                (err && err.message ? '错误：' + err.message : '');
+            box.appendChild(title);
+            box.appendChild(detail);
+            alts.forEach(function (k) {
+                var a = document.createElement('a');
+                a.href = location.pathname + '?cdn=' + k;
+                a.style.cssText = 'color:#8ab4ff;text-decoration:underline;';
+                a.textContent = '用备用源重试：' + k;
+                box.appendChild(a);
+            });
+            document.body.appendChild(box);
+        }
+
+        let THREE, OrbitControls, OBJLoader, TGALoader, DDSLoader;
+        try {
+            THREE = await import('three');
+            ({ OrbitControls } = await import('three/addons/controls/OrbitControls.js'));
+            ({ OBJLoader } = await import('three/addons/loaders/OBJLoader.js'));
+            ({ TGALoader } = await import('three/addons/loaders/TGALoader.js'));
+            ({ DDSLoader } = await import('three/addons/loaders/DDSLoader.js'));
+        } catch (err) {
+            showFatalLoad(err);
+            throw err;
+        }
 
         // ============================================================
         //  DOM 引用
@@ -350,18 +403,37 @@
         const texLog = document.getElementById('tex-log');
 
         let texLogEntries = [];
+        const TEX_LOG_KEEP = 500;   // 内存里保留的条数上限
+        const TEX_LOG_RENDER = 40;  // 面板里渲染的条数
+        let texLogPending = false;
 
         function logTex(msg, type = 'info') {
             texLogEntries.push({ msg, type });
-            // 只保留最新20条
-            if (texLogEntries.length > 20) texLogEntries.shift();
-            renderTexLog();
+            if (texLogEntries.length > TEX_LOG_KEEP) texLogEntries.shift();
+            if (texLogPending) return;
+            texLogPending = true;
+            requestAnimationFrame(renderTexLog);
         }
 
         function renderTexLog() {
-            texLog.innerHTML = texLogEntries.map(e =>
-                `<div class="${e.type}">${e.msg}</div>`
-            ).join('');
+            texLogPending = false;
+            const total = texLogEntries.length;
+            const shown = texLogEntries.slice(-TEX_LOG_RENDER);
+            const frag = document.createDocumentFragment();
+            if (total > shown.length) {
+                const head = document.createElement('div');
+                head.className = 'info';
+                head.textContent = `…共 ${total} 条，仅显示最后 ${shown.length} 条`;
+                frag.appendChild(head);
+            }
+            for (const e of shown) {
+                const row = document.createElement('div');
+                row.className = e.type;
+                // 用 textContent 而不是 innerHTML：ZIP 内的文件名可能带 HTML 标签
+                row.textContent = e.msg;
+                frag.appendChild(row);
+            }
+            texLog.replaceChildren(frag);
             texLog.scrollTop = texLog.scrollHeight;
         }
 
@@ -430,6 +502,21 @@
         let needsRender = true;
         const invalidate = () => { needsRender = true; };
 
+        // ---- 环境光照：PBR 材质没有 envMap 时金属与高光会发死 ----
+        (async () => {
+            try {
+                const { RoomEnvironment } = await import('three/addons/environments/RoomEnvironment.js');
+                const pmrem = new THREE.PMREMGenerator(renderer);
+                const envRT = pmrem.fromScene(new RoomEnvironment(renderer), 0.04);
+                scene.environment = envRT.texture;
+                scene.environmentIntensity = 0.45;
+                pmrem.dispose();
+                invalidate();
+            } catch (e) {
+                console.warn('环境贴图加载失败，已跳过：', e);
+            }
+        })();
+
         const MAX_ZIP_BYTES = 300 * 1024 * 1024;
         const MAX_UNZIP_BYTES = 600 * 1024 * 1024;
 
@@ -479,6 +566,14 @@
             });
             polyCountEl.textContent = Math.round(verts).toLocaleString();
             triCountEl.textContent = Math.round(tris).toLocaleString();
+
+            // 高面数模型降低渲染分辨率，避免移动端掉帧
+            const ratio = tris > 500000 ? 1 : Math.min(window.devicePixelRatio, 2);
+            if (renderer.getPixelRatio() !== ratio) {
+                renderer.setPixelRatio(ratio);
+                renderer.setSize(container.clientWidth, container.clientHeight);
+                invalidate();
+            }
         }
 
         const TEXTURE_SLOTS = ['map', 'bumpMap', 'normalMap', 'specularMap',
@@ -551,7 +646,7 @@
 
         const TEXTURE_EXT_RE = /\.(jpg|jpeg|png|bmp|webp|gif|tga|dds)$/;
 
-        async function unzipFile(file) {
+        async function unzipFile(file, onProgress) {
             await loadJSZip();
             const data = await file.arrayBuffer();
             const zip = await window.JSZip.loadAsync(data);
@@ -559,8 +654,11 @@
             const urls = [];
             let totalBytes = 0;
 
+            const names = Object.keys(zip.files).filter(n => !zip.files[n].dir);
+            let done = 0;
+
             try {
-                for (const name in zip.files) {
+                for (const name of names) {
                     const entry = zip.files[name];
                     if (entry.dir) continue;
                     const lower = name.toLowerCase();
@@ -577,6 +675,8 @@
                         blobUrlMeta.set(url, { name, ext: lower.split('.').pop() });
                         files[name] = url;
                     }
+                    done++;
+                    if (onProgress) onProgress(done / names.length);
                 }
             } catch (err) {
                 revokeBlobUrls(urls);
@@ -667,17 +767,21 @@
             isLoading = true;
             texLogEntries = [];
             renderTexLog();
+            if (file.size > 80 * 1024 * 1024) {
+                logTex(`⚠️ ZIP 体积 ${(file.size / 1024 / 1024).toFixed(0)} MB，移动端解析可能因内存不足失败`, 'fail');
+            }
             setStatus('解压中...', 'loading');
             setProgress(10);
 
             let pending = null;
             try {
-                pending = await unzipFile(file);
+                pending = await unzipFile(file, (p) => setProgress(10 + p * 30));
                 const files = pending.files;
                 setProgress(40);
 
                 let objText = null;
                 let mtlText = null;
+                const mtlNames = [];
                 const texMap = {};
                 const allTexNames = [];
 
@@ -688,6 +792,7 @@
                         if (objText) logTex(`ZIP 内有多个 .obj，使用最后一个: ${name}`, 'fail');
                         objText = value;
                     } else if (lower.endsWith('.mtl')) {
+                        mtlNames.push(name);
                         mtlText = value;
                     } else if (typeof value === 'string' && value.startsWith('blob:')) {
                         const base = name.split(/[\\\/]/).pop();
@@ -698,6 +803,12 @@
                         allTexNames.push(base);
                         logTex(` 纹理: ${base}`, 'info');
                     }
+                }
+
+                if (mtlNames.length > 1) {
+                    const used = mtlNames[mtlNames.length - 1];
+                    const ignored = mtlNames.slice(0, -1).join(', ');
+                    logTex(`⚠️ ZIP 内有 ${mtlNames.length} 个 .mtl，只使用 "${used}"，已忽略: ${ignored}`, 'fail');
                 }
 
                 if (!objText) {
@@ -734,6 +845,9 @@
                 obj.position.sub(center);
 
                 const maxDim = Math.max(size.x, size.y, size.z);
+
+                // 网格贴合模型底部（固定 y=-0.5 会插在模型中间）
+                grid.position.y = (box.min.y - center.y) - maxDim * 0.02;
                 const dist = Math.max(maxDim * 1.8, 1.5);
                 camera.position.set(dist * 0.7, dist * 0.5, dist);
                 // 按模型尺寸调整裁剪面与缩放范围，避免大模型被 far 裁掉
@@ -803,7 +917,8 @@
                     const g = parseFloat(parts[2]);
                     const b = parseFloat(parts[3]);
                     if (!isNaN(r + g + b)) {
-                        mats[current].color.setRGB(r, g, b);
+                        // MTL 的 Kd 是 sRGB 值，不声明会被当线性值，模型整体发亮发白
+                        mats[current].color.setRGB(r, g, b, THREE.SRGBColorSpace);
                     }
                 } else if (cmd === 'Ns' && current) {
                     const val = parseFloat(parts[1]);
@@ -815,6 +930,14 @@
                     if (!isNaN(val)) {
                         mats[current].opacity = val;
                         mats[current].transparent = val < 1;
+                    }
+                } else if (cmd === 'Tr' && current) {
+                    // 老式 MTL 用 Tr 表示透明度（Tr = 1 - d）
+                    const val = parseFloat(parts[1]);
+                    if (!isNaN(val)) {
+                        const opacity = Math.max(0, Math.min(1, 1 - val));
+                        mats[current].opacity = opacity;
+                        mats[current].transparent = opacity < 1;
                     }
                 } else if (cmd === 'map_Kd' && current) {
                     const texName = parts.slice(1).join(' ');
@@ -840,12 +963,55 @@
                         matched++;
                     }
                 } else if (cmd === 'map_Ks' && current) {
-                    // 高光贴图 -> 粗糙度贴图 (近似)
+                    // 高光贴图 -> 粗糙度贴图 (近似，两者语义并不等价)
                     const texName = parts.slice(1).join(' ');
                     const match = findTextureSmart(texName, texMap, allTexNames);
                     if (match) {
                         const tex = loadTextureByUrl(match);
                         mats[current].roughnessMap = tex;
+                        mats[current].needsUpdate = true;
+                        matched++;
+                        logTex(` ${current} → 高光贴图已按粗糙度近似处理`, 'info');
+                    }
+                } else if ((cmd === 'norm' || cmd === 'map_Kn' || cmd === 'map_normal') && current) {
+                    // 法线贴图是数据贴图，必须保持线性色彩空间
+                    const texName = parts.slice(1).join(' ');
+                    const match = findTextureSmart(texName, texMap, allTexNames);
+                    if (match) {
+                        const tex = loadTextureByUrl(match);
+                        tex.colorSpace = THREE.NoColorSpace;
+                        mats[current].normalMap = tex;
+                        mats[current].needsUpdate = true;
+                        matched++;
+                        logTex(` ${current} → 法线贴图已应用`, 'ok');
+                    }
+                } else if ((cmd === 'map_d' || cmd === 'map_alpha') && current) {
+                    const texName = parts.slice(1).join(' ');
+                    const match = findTextureSmart(texName, texMap, allTexNames);
+                    if (match) {
+                        const tex = loadTextureByUrl(match);
+                        tex.colorSpace = THREE.NoColorSpace;
+                        mats[current].alphaMap = tex;
+                        mats[current].transparent = true;
+                        mats[current].needsUpdate = true;
+                        matched++;
+                        logTex(` ${current} → alpha 贴图已应用`, 'ok');
+                    }
+                } else if (cmd === 'Ke' && current) {
+                    const r = parseFloat(parts[1]);
+                    const g = parseFloat(parts[2]);
+                    const b = parseFloat(parts[3]);
+                    if (!isNaN(r + g + b)) {
+                        mats[current].emissive.setRGB(r, g, b, THREE.SRGBColorSpace);
+                        mats[current].emissiveIntensity = 1;
+                    }
+                } else if (cmd === 'map_Ke' && current) {
+                    const texName = parts.slice(1).join(' ');
+                    const match = findTextureSmart(texName, texMap, allTexNames);
+                    if (match) {
+                        const tex = loadTextureByUrl(match);
+                        tex.colorSpace = THREE.SRGBColorSpace;
+                        mats[current].emissiveMap = tex;
                         mats[current].needsUpdate = true;
                         matched++;
                     }
@@ -856,6 +1022,7 @@
         }
 
         function applyMaterials(obj, mats) {
+            const warned = new Set();
             obj.traverse(child => {
                 if (child.isMesh) {
                     const oldMat = child.material;
@@ -873,11 +1040,16 @@
                                 break;
                             }
                         }
-                        // 如果还没匹配，用第一个
+                        // 如果还没匹配，用第一个（并告警，不静默错配）
                         if (!child.material || child.material === oldMat) {
                             const keys = Object.keys(mats);
                             if (keys.length > 0) {
                                 child.material = mats[keys[0]];
+                                const key = matName || '(未命名)';
+                                if (!warned.has(key)) {
+                                    warned.add(key);
+                                    logTex(`⚠️ 材质 "${key}" 未在 MTL 中找到，已套用第一个材质 "${keys[0]}"`, 'fail');
+                                }
                             }
                         }
                     }
@@ -963,7 +1135,7 @@
         animate();
 
         setStatus(' 选择 ZIP 压缩包加载', 'idle');
-        console.log(' 手机版3D查看器 (贴图修复版)');
+        console.log('[Web3D Viewer] v1.0.1 | three r163 | CDN: ' + (window.__CDN_KEY__ || 'jsdelivr'));
         console.log(' 点击 "贴图" 查看纹理匹配日志');
     </script>
 </body>
