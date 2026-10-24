@@ -10,275 +10,234 @@
     <meta property="og:type" content="website" />
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230d0d14'/%3E%3Cpath d='M32 12 52 23v18L32 52 12 41V23z' fill='none' stroke='%236699ff' stroke-width='3'/%3E%3Cpath d='M12 23l20 11 20-11M32 34v18' fill='none' stroke='%236699ff' stroke-width='2.5' opacity='.75'/%3E%3C/svg%3E" />
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
+        :root {
+            --bg: #141414;
+            --panel: #1b1b1b;
+            --panel-hi: #242424;
+            --panel-hover: #2b2b2b;
+            --line: #2c2c2c;
+            --line-hi: #3a3a3a;
+            --fg: #d6d6d6;
+            --fg-dim: #8c8c8c;
+            --fg-faint: #565656;
+            --accent: #e07b39;
+            --ok: #78a878;
+            --warn: #cfa04a;
+            --err: #cc5f5f;
+            --mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
         }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { height: 100%; }
         body {
-            background: #0d0d14;
-            font-family: -apple-system, 'Segoe UI', sans-serif;
+            background: var(--bg);
+            color: var(--fg);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+            font-size: 13px;
             overflow: hidden;
-            height: 100vh;
-            color: #fff;
             touch-action: none;
-        }
-        #canvas-container {
-            width: 100vw;
-            height: 100vh;
-            display: block;
+            -webkit-font-smoothing: antialiased;
         }
 
-        #bottom-bar {
+        /* ---------- canvas ---------- */
+        #canvas-container { position: fixed; inset: 0; }
+        #canvas-container canvas { display: block; }
+        body.dragging::after {
+            content: '';
             position: fixed;
-            bottom: 30px;
-            left: 50%;
-            transform: translateX(-50%);
-            width: calc(100% - 32px);
-            max-width: 420px;
-            background: rgba(12, 12, 28, 0.88);
-            backdrop-filter: blur(16px);
-            -webkit-backdrop-filter: blur(16px);
-            border-radius: 20px;
-            padding: 14px 18px;
-            border: 1px solid rgba(255, 255, 255, 0.07);
-            box-shadow: 0 8px 40px rgba(0, 0, 0, 0.7);
+            inset: 8px;
+            border: 1px dashed var(--accent);
+            pointer-events: none;
+            z-index: 500;
+        }
+
+        /* ---------- 顶部栏 ---------- */
+        #topbar {
+            position: fixed;
+            top: 0; left: 0; right: 0;
+            height: 44px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 0 12px;
+            background: var(--panel);
+            border-bottom: 1px solid var(--line);
+            z-index: 200;
+        }
+        #topbar .brand {
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: .02em;
+            color: var(--fg);
+            white-space: nowrap;
+        }
+        #file-name {
+            font-family: var(--mono);
+            font-size: 11px;
+            color: var(--fg-dim);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            min-width: 0;
+        }
+        #stats {
+            margin-left: auto;
+            display: flex;
+            gap: 14px;
+            font-size: 11px;
+            color: var(--fg-dim);
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+        }
+        #stats b { color: var(--fg); font-weight: 500; }
+
+        /* ---------- 底部栏 ---------- */
+        #bottombar {
+            position: fixed;
+            bottom: 0; left: 0; right: 0;
+            background: var(--panel);
+            border-top: 1px solid var(--line);
+            z-index: 200;
+            padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px));
             display: flex;
             flex-direction: column;
-            gap: 10px;
-            z-index: 200;
-            align-items: center;
-        }
-        #bottom-bar .row {
-            display: flex;
-            gap: 10px;
-            width: 100%;
-        }
-        #bottom-bar button {
-            flex: 1;
-            padding: 14px 0;
-            border: none;
-            border-radius: 14px;
-            font-size: 16px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.2s;
-            touch-action: manipulation;
-            letter-spacing: 0.5px;
-        }
-        #btn-load {
-            background: linear-gradient(145deg, #5b7aff, #3b5de7);
-            color: #fff;
-            box-shadow: 0 4px 16px rgba(59, 93, 231, 0.35);
-        }
-        #btn-load:active {
-            transform: scale(0.96);
-            opacity: 0.8;
-        }
-        #btn-reset {
-            background: rgba(255, 255, 255, 0.08);
-            color: #aaa;
-            flex: 0.5;
-        }
-        #btn-reset:active {
-            background: rgba(255, 255, 255, 0.15);
-        }
-        #btn-auto {
-            background: rgba(255, 255, 255, 0.08);
-            color: #aaa;
-            flex: 0.5;
-        }
-        #btn-auto.active {
-            background: rgba(91, 122, 255, 0.25);
-            color: #7c8cff;
-        }
-        #btn-auto:active {
-            background: rgba(255, 255, 255, 0.15);
-        }
-        #btn-debug {
-            background: rgba(255, 200, 50, 0.15);
-            color: #ccaa55;
-            flex: 0.4;
-            font-size: 13px;
-        }
-        #btn-debug:active {
-            background: rgba(255, 200, 50, 0.25);
-        }
-
-        #status {
-            font-size: 12px;
-            color: #888;
-            text-align: center;
-            width: 100%;
-            padding: 2px 0;
-            letter-spacing: 0.3px;
-            min-height: 20px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
             gap: 8px;
-            flex-wrap: wrap;
         }
-        #status .dot {
-            display: inline-block;
-            width: 6px;
-            height: 6px;
-            border-radius: 50%;
-            background: #4caf50;
-            margin-right: 4px;
-        }
-        #status .dot.loading {
-            background: #ffaa44;
-            animation: pulse-dot 0.8s infinite;
-        }
-        #status .dot.error {
-            background: #f44336;
-        }
-        #status .dot.warning {
-            background: #ffaa44;
-        }
-
-        @keyframes pulse-dot {
-            0%,
-            100% {
-                opacity: 1;
-                transform: scale(1);
-            }
-            50% {
-                opacity: 0.3;
-                transform: scale(0.7);
-            }
-        }
-
-        #zip-input {
-            display: none;
-        }
-
         #progress-wrap {
-            width: 100%;
-            height: 3px;
-            background: rgba(255, 255, 255, 0.06);
-            border-radius: 4px;
-            overflow: hidden;
+            height: 2px;
+            background: #242424;
             opacity: 0;
-            transition: opacity 0.3s;
+            transition: opacity .2s;
         }
-        #progress-wrap.active {
-            opacity: 1;
-        }
+        #progress-wrap.active { opacity: 1; }
         #progress-bar {
             height: 100%;
-            width: 0%;
-            background: linear-gradient(90deg, #5b7aff, #a78bfa);
-            border-radius: 4px;
-            transition: width 0.25s ease;
+            width: 0;
+            background: var(--accent);
+            transition: width .15s linear;
         }
+        .bar-row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .spacer { flex: 1; }
 
-        #stats {
-            position: fixed;
-            top: 16px;
-            right: 16px;
-            background: rgba(0, 0, 0, 0.6);
-            backdrop-filter: blur(8px);
-            -webkit-backdrop-filter: blur(8px);
-            padding: 10px 14px;
-            border-radius: 12px;
-            font-size: 11px;
-            font-family: 'SF Mono', 'Courier New', monospace;
-            color: #8899bb;
-            line-height: 1.7;
-            z-index: 50;
-            border: 1px solid rgba(255, 255, 255, 0.04);
-            pointer-events: none;
-            min-width: 80px;
+        /* ---------- 按钮 ---------- */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            height: 30px;
+            padding: 0 10px;
+            background: var(--panel-hi);
+            border: 1px solid var(--line-hi);
+            border-radius: 2px;
+            color: var(--fg);
+            font-size: 12px;
+            font-family: inherit;
+            line-height: 1;
+            cursor: pointer;
+            touch-action: manipulation;
+            transition: background .12s, border-color .12s, color .12s;
+            -webkit-tap-highlight-color: transparent;
         }
-        #stats .num {
-            color: #aabbdd;
+        .btn:hover { background: var(--panel-hover); border-color: #484848; }
+        .btn:active { background: #333; }
+        .btn svg { width: 15px; height: 15px; flex: none; }
+        .btn.icon { width: 32px; padding: 0; }
+        .btn.primary {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: #141414;
             font-weight: 600;
         }
+        .btn.primary:hover { background: #ea8a4b; border-color: #ea8a4b; }
+        .btn.on {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
 
+        /* ---------- 状态 ---------- */
+        #status {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 11px;
+            color: var(--fg-dim);
+            min-height: 14px;
+            overflow: hidden;
+        }
+        #status-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        #status .dot {
+            width: 5px; height: 5px;
+            border-radius: 50%;
+            background: var(--ok);
+            flex: none;
+        }
+        #status .dot.loading { background: var(--warn); }
+        #status .dot.error { background: var(--err); }
+        #status .dot.warning { background: var(--warn); }
+
+        /* ---------- 空状态 ---------- */
         #empty-hint {
             position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
+            inset: 44px 0 0 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            color: var(--fg-faint);
+            font-size: 13px;
             text-align: center;
-            color: rgba(255, 255, 255, 0.12);
-            font-size: 15px;
-            letter-spacing: 1px;
             pointer-events: none;
-            z-index: 10;
-            line-height: 2;
+            z-index: 5;
         }
-        #empty-hint .big {
-            font-size: 48px;
-            display: block;
-            margin-bottom: 8px;
-            opacity: 0.6;
-        }
+        #empty-hint svg { width: 44px; height: 44px; opacity: .5; }
+        #empty-hint .sub { font-size: 11px; color: #464646; font-family: var(--mono); }
 
-        /* ===== 贴图日志 (调试) ===== */
+        /* ---------- 贴图日志面板 ---------- */
         #tex-log {
             position: fixed;
-            bottom: 110px;
-            left: 50%;
-            transform: translateX(-50%);
-            width: calc(100% - 32px);
-            max-width: 400px;
-            max-height: 120px;
+            top: 44px;
+            right: 0;
+            bottom: 0;
+            width: 340px;
+            max-width: 100%;
+            background: var(--panel);
+            border-left: 1px solid var(--line);
             overflow-y: auto;
-            background: rgba(0, 0, 0, 0.75);
-            backdrop-filter: blur(8px);
-            border-radius: 12px;
-            padding: 10px 14px;
+            font-family: var(--mono);
             font-size: 11px;
-            font-family: monospace;
-            color: #88bb88;
-            z-index: 150;
-            display: none;
-            border: 1px solid rgba(255, 255, 255, 0.05);
-            line-height: 1.6;
-            pointer-events: none;
+            line-height: 1.55;
+            z-index: 190;
+            transform: translateX(100%);
+            transition: transform .16s ease;
+            overscroll-behavior: contain;
         }
-        #tex-log.show {
-            display: block;
+        #tex-log.show { transform: translateX(0); }
+        #tex-log div {
+            padding: 3px 10px;
+            border-bottom: 1px solid #202020;
+            word-break: break-all;
+            color: var(--fg-dim);
         }
-        #tex-log .ok {
-            color: #66dd88;
-        }
-        #tex-log .fail {
-            color: #ff6666;
-        }
-        #tex-log .info {
-            color: #88aadd;
-        }
+        #tex-log .ok { color: var(--ok); }
+        #tex-log .fail { color: var(--err); }
+        #tex-log .info { color: var(--fg-faint); }
 
-        @media (max-width: 480px) {
-            #bottom-bar {
-                bottom: 20px;
-                padding: 12px 14px;
-                border-radius: 16px;
-            }
-            #bottom-bar button {
-                padding: 12px 0;
-                font-size: 14px;
-                border-radius: 12px;
-            }
-            #stats {
-                font-size: 10px;
-                padding: 8px 12px;
-                top: 12px;
-                right: 12px;
-            }
-            #empty-hint .big {
-                font-size: 36px;
-            }
-            #tex-log {
-                bottom: 100px;
-                max-height: 80px;
-                font-size: 10px;
-                padding: 8px 12px;
-            }
+        #zip-input { display: none; }
+
+        @media (max-width: 560px) {
+            #topbar { height: 40px; gap: 8px; padding: 0 10px; }
+            #topbar .brand { display: none; }
+            #stats { gap: 10px; font-size: 10px; }
+            #empty-hint { inset: 40px 0 0 0; }
+            #tex-log { top: 40px; width: 100%; }
+            .btn { height: 28px; padding: 0 8px; font-size: 11px; }
+            .btn.icon { width: 30px; }
+            .btn svg { width: 14px; height: 14px; }
         }
     </style>
 </head>
@@ -287,33 +246,79 @@
     <div id="canvas-container"></div>
 
     <div id="empty-hint">
-        <span class="big"></span>
-        选择 .zip 压缩包加载<br />
-        <span style="font-size:12px;opacity:0.5;">包含 .obj + .mtl + 纹理</span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round">
+            <path d="M12 2.6 21 7.4v9.2L12 21.4 3 16.6V7.4z" />
+            <path d="M3 7.4l9 4.8 9-4.8M12 12.2v9.2" opacity=".55" />
+        </svg>
+        <div>拖入 ZIP，或点击「打开 ZIP」</div>
+        <div class="sub">.obj + .mtl + textures</div>
     </div>
 
-    <div id="stats">
-        🧩 <span class="num" id="poly-count">0</span><br />
-         <span class="num" id="tri-count">0</span>
-    </div>
+    <header id="topbar">
+        <div class="brand">Web3D Viewer</div>
+        <div id="file-name">未加载</div>
+        <div id="stats">
+            <span>顶点 <b id="poly-count">0</b></span>
+            <span>三角面 <b id="tri-count">0</b></span>
+        </div>
+    </header>
 
     <div id="tex-log"></div>
 
-    <div id="bottom-bar">
-        <div class="row">
-            <button id="btn-load"> 选择 ZIP</button>
-            <button id="btn-auto"> 旋转</button>
-            <button id="btn-reset">⟲ 重置</button>
-            <button id="btn-debug"> 贴图</button>
-        </div>
-        <div id="progress-wrap">
-            <div id="progress-bar"></div>
+    <footer id="bottombar">
+        <div id="progress-wrap"><div id="progress-bar"></div></div>
+        <div class="bar-row">
+            <button id="btn-load" class="btn primary" title="打开 ZIP">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+                    <path d="M3 6.5h6l1.5 2H21v10H3z" />
+                </svg>
+                <span>打开 ZIP</span>
+            </button>
+            <div class="spacer"></div>
+            <button id="btn-grid" class="btn icon on" title="网格 (G)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path d="M3 3h18v18H3zM9 3v18M15 3v18M3 9h18M3 15h18" />
+                </svg>
+            </button>
+            <button id="btn-wire" class="btn icon" title="线框 (W)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round">
+                    <path d="M12 3l9 16H3z" />
+                </svg>
+            </button>
+            <button id="btn-auto" class="btn icon" title="自动旋转 (空格)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+                    <path d="M20 12a8 8 0 1 1-2.3-5.6" />
+                    <path d="M20 4v4h-4" />
+                </svg>
+            </button>
+            <button id="btn-reset" class="btn icon" title="重置视角 (R)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <circle cx="12" cy="12" r="2.4" />
+                    <path d="M12 3v4M12 17v4M3 12h4M17 12h4" stroke-linecap="round" />
+                </svg>
+            </button>
+            <button id="btn-shot" class="btn icon" title="截图 (S)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round">
+                    <path d="M3 8h4l1.6-2h6.8L17 8h4v11H3z" />
+                    <circle cx="12" cy="13" r="3.2" />
+                </svg>
+            </button>
+            <button id="btn-full" class="btn icon" title="全屏 (F)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+                    <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />
+                </svg>
+            </button>
+            <button id="btn-debug" class="btn icon" title="贴图日志 (L)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+                    <path d="M4 6h16M4 12h16M4 18h10" />
+                </svg>
+            </button>
         </div>
         <div id="status">
             <span class="dot"></span>
-            <span id="status-text">就绪，点击下方加载</span>
+            <span id="status-text">就绪</span>
         </div>
-    </div>
+    </footer>
 
     <input type="file" id="zip-input" accept=".zip" />
 
@@ -355,7 +360,7 @@
             box.style.cssText = 'position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:24px;text-align:center;background:rgba(13,13,20,.96);z-index:9999;font-size:14px;line-height:1.7;';
             var title = document.createElement('div');
             title.style.cssText = 'font-size:16px;font-weight:600;color:#ff8a8a;';
-            title.textContent = '❌ Three.js 加载失败';
+            title.textContent = 'Three.js 加载失败';
             var detail = document.createElement('div');
             detail.style.cssText = 'max-width:460px;opacity:.82;';
             detail.textContent = '当前源：' + cur + '。可能是网络无法访问该 CDN。' +
@@ -401,6 +406,11 @@
         const triCountEl = document.getElementById('tri-count');
         const emptyHint = document.getElementById('empty-hint');
         const texLog = document.getElementById('tex-log');
+        const btnGrid = document.getElementById('btn-grid');
+        const btnWire = document.getElementById('btn-wire');
+        const btnShot = document.getElementById('btn-shot');
+        const btnFull = document.getElementById('btn-full');
+        const fileNameEl = document.getElementById('file-name');
 
         let texLogEntries = [];
         const TEX_LOG_KEEP = 500;   // 内存里保留的条数上限
@@ -449,6 +459,8 @@
         const renderer = new THREE.WebGLRenderer({
             antialias: true,
             powerPreference: 'high-performance',
+            // 截图要读回画布内容，必须保留绘制缓冲
+            preserveDrawingBuffer: true,
         });
         renderer.setSize(container.clientWidth, container.clientHeight);
         renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -585,7 +597,7 @@
             for (const slot of TEXTURE_SLOTS) {
                 const tex = mat[slot];
                 if (tex && typeof tex.dispose === 'function') {
-                    tex.dispose();
+                    releaseTexture(tex);
                     mat[slot] = null;
                 }
             }
@@ -687,7 +699,29 @@
         }
 
         // 按扩展名选择解码器：浏览器原生只能解 jpg/png/webp/bmp/gif，tga 和 dds 需要专用 loader
-        function loadTextureByUrl(url) {
+        // key -> { tex, refs }：同一张图只解码一次
+        // 键包含色彩空间：同一张图作为基色（sRGB）和法线/高度（线性）引用时不能共用一个 Texture
+        const texturePool = new Map();
+
+        function loadTextureByUrl(url, srgb = true) {
+            const key = url + (srgb ? '|s' : '|l');
+            const cached = texturePool.get(key);
+            if (cached) {
+                cached.refs++;
+                return cached.tex;
+            }
+
+            // 同一张图已按另一种色彩空间加载过：clone 一份共享 image，不重复解码
+            for (const [k, rec] of texturePool) {
+                if (k.startsWith(url + '|')) {
+                    const copy = rec.tex.clone();
+                    copy.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+                    copy.needsUpdate = true;
+                    texturePool.set(key, { tex: copy, refs: 1 });
+                    return copy;
+                }
+            }
+
             const meta = blobUrlMeta.get(url);
             const ext = meta ? meta.ext : '';
 
@@ -696,7 +730,7 @@
                 if (img && img.width) {
                     const maxTex = renderer.capabilities.maxTextureSize;
                     if (Math.max(img.width, img.height) > maxTex) {
-                        logTex(`⚠️ ${meta ? meta.name : '纹理'} 尺寸 ${img.width}×${img.height} 超过设备上限 ${maxTex}，已关闭 mipmap`, 'fail');
+                        logTex(`${meta ? meta.name : '纹理'} 尺寸 ${img.width}×${img.height} 超过设备上限 ${maxTex}，已关闭 mipmap`, 'fail');
                         tex.generateMipmaps = false;
                         tex.minFilter = THREE.LinearFilter;
                         tex.needsUpdate = true;
@@ -705,9 +739,30 @@
                 invalidate();
             };
 
-            if (ext === 'tga') return new TGALoader().load(url, onLoad);
-            if (ext === 'dds') return new DDSLoader().load(url, onLoad);
-            return new THREE.TextureLoader().load(url, onLoad);
+            let tex;
+            if (ext === 'tga') tex = new TGALoader().load(url, onLoad);
+            else if (ext === 'dds') tex = new DDSLoader().load(url, onLoad);
+            else tex = new THREE.TextureLoader().load(url, onLoad);
+
+            tex.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+            texturePool.set(key, { tex, refs: 1 });
+            return tex;
+        }
+
+        // 引用计数归零才真正释放，避免多个材质共用贴图时被提前销毁
+        function releaseTexture(tex) {
+            if (!tex) return;
+            for (const [url, rec] of texturePool) {
+                if (rec.tex === tex) {
+                    rec.refs--;
+                    if (rec.refs <= 0) {
+                        tex.dispose();
+                        texturePool.delete(url);
+                    }
+                    return;
+                }
+            }
+            if (typeof tex.dispose === 'function') tex.dispose();
         }
 
         // ============================================================
@@ -729,7 +784,7 @@
             for (const key in texMap) {
                 const keyBase = key.replace(/^.*[\\\/]/, '').toLowerCase().replace(/\.[^.]+$/, '');
                 if (keyBase === baseNoExt) {
-                    logTex(`✅ 匹配: "${clean}" → "${key}"`, 'ok');
+                    logTex(`匹配: "${clean}" → "${key}"`, 'ok');
                     return texMap[key];
                 }
             }
@@ -738,18 +793,18 @@
             for (const key in texMap) {
                 const keyBase = key.replace(/^.*[\\\/]/, '').toLowerCase();
                 if (keyBase.includes(baseNoExt) || baseNoExt.includes(keyBase.replace(/\.[^.]+$/, ''))) {
-                    logTex(` 模糊匹配: "${clean}" → "${key}"`, 'ok');
+                    logTex(`模糊匹配: "${clean}" → "${key}"`, 'ok');
                     return texMap[key];
                 }
             }
 
             // 4. 如果纹理名是数字或简单名，尝试找唯一纹理
             if (allTexNames.length === 1) {
-                logTex(` 只有一张贴图，直接使用`, 'ok');
+                logTex(`只有一张贴图，直接使用`, 'ok');
                 return texMap[allTexNames[0]];
             }
 
-            logTex(`❌ 未找到: "${clean}"`, 'fail');
+            logTex(`未找到: "${clean}"`, 'fail');
             return null;
         }
 
@@ -765,10 +820,12 @@
             }
 
             isLoading = true;
+            fileNameEl.textContent = file.name;
+            fileNameEl.title = file.name;
             texLogEntries = [];
             renderTexLog();
             if (file.size > 80 * 1024 * 1024) {
-                logTex(`⚠️ ZIP 体积 ${(file.size / 1024 / 1024).toFixed(0)} MB，移动端解析可能因内存不足失败`, 'fail');
+                logTex(`ZIP 体积 ${(file.size / 1024 / 1024).toFixed(0)} MB，移动端解析可能因内存不足失败`, 'fail');
             }
             setStatus('解压中...', 'loading');
             setProgress(10);
@@ -796,23 +853,26 @@
                         mtlText = value;
                     } else if (typeof value === 'string' && value.startsWith('blob:')) {
                         const base = name.split(/[\\\/]/).pop();
+                        if (texMap[base] && texMap[base] !== value) {
+                            logTex(`贴图重名：${base} 有多份，已用 ${name} 覆盖前一份`, 'fail');
+                        }
                         texMap[base] = value;
                         texMap[lower] = value;
                         texMap[base.toLowerCase()] = value;
                         texMap[lower.toLowerCase()] = value;
                         allTexNames.push(base);
-                        logTex(` 纹理: ${base}`, 'info');
+                        logTex(`纹理: ${base}`, 'info');
                     }
                 }
 
                 if (mtlNames.length > 1) {
                     const used = mtlNames[mtlNames.length - 1];
                     const ignored = mtlNames.slice(0, -1).join(', ');
-                    logTex(`⚠️ ZIP 内有 ${mtlNames.length} 个 .mtl，只使用 "${used}"，已忽略: ${ignored}`, 'fail');
+                    logTex(`ZIP 内有 ${mtlNames.length} 个 .mtl，只使用 "${used}"，已忽略: ${ignored}`, 'fail');
                 }
 
                 if (!objText) {
-                    setStatus('❌ ZIP 中没有 .obj 文件', 'error');
+                    setStatus('ZIP 中没有 .obj 文件', 'error');
                     revokeBlobUrls(pending.urls);
                     isLoading = false;
                     setProgress(-1);
@@ -866,14 +926,15 @@
                 invalidate();
 
                 updateStats(obj);
+                if (wireframe) applyWireframe(obj);
                 setProgress(100);
 
-                const texStatus = texMatched > 0 ? `✅ ${texMatched}张贴图` : '⚠️ 无贴图';
-                setStatus(`✅ ${matCount}材质 · ${texStatus}`, texMatched > 0 ? 'idle' : 'warning');
+                const texStatus = texMatched > 0 ? `${texMatched}张贴图` : '无贴图';
+                setStatus(`${matCount}材质 · ${texStatus}`, texMatched > 0 ? 'idle' : 'warning');
                 emptyHint.style.display = 'none';
 
                 if (texMatched === 0 && allTexNames.length > 0) {
-                    logTex(`⚠️ 有 ${allTexNames.length} 张贴图但未匹配，尝试手动匹配`, 'fail');
+                    logTex(`有 ${allTexNames.length} 张贴图但未匹配，尝试手动匹配`, 'fail');
                 }
 
                 setTimeout(() => setProgress(-1), 800);
@@ -881,7 +942,7 @@
             } catch (err) {
                 console.error(err);
                 if (pending) revokeBlobUrls(pending.urls);
-                setStatus('❌ ' + err.message, 'error');
+                setStatus('' + err.message, 'error');
                 setProgress(-1);
             }
 
@@ -943,20 +1004,19 @@
                     const texName = parts.slice(1).join(' ');
                     const match = findTextureSmart(texName, texMap, allTexNames);
                     if (match) {
-                        const tex = loadTextureByUrl(match);
-                        tex.colorSpace = THREE.SRGBColorSpace;
+                        const tex = loadTextureByUrl(match, true);
                         mats[current].map = tex;
                         mats[current].needsUpdate = true;
                         matched++;
-                        logTex(` ${current} → 贴图已应用`, 'ok');
+                        logTex(`${current} → 贴图已应用`, 'ok');
                     } else {
-                        logTex(`⚠️ ${current} → 贴图缺失: ${texName}`, 'fail');
+                        logTex(`${current} → 贴图缺失: ${texName}`, 'fail');
                     }
                 } else if ((cmd === 'map_bump' || cmd === 'bump') && current) {
                     const texName = parts.slice(1).join(' ');
                     const match = findTextureSmart(texName, texMap, allTexNames);
                     if (match) {
-                        const tex = loadTextureByUrl(match);
+                        const tex = loadTextureByUrl(match, false);
                         mats[current].bumpMap = tex;
                         mats[current].bumpScale = 0.5;
                         mats[current].needsUpdate = true;
@@ -967,35 +1027,33 @@
                     const texName = parts.slice(1).join(' ');
                     const match = findTextureSmart(texName, texMap, allTexNames);
                     if (match) {
-                        const tex = loadTextureByUrl(match);
+                        const tex = loadTextureByUrl(match, false);
                         mats[current].roughnessMap = tex;
                         mats[current].needsUpdate = true;
                         matched++;
-                        logTex(` ${current} → 高光贴图已按粗糙度近似处理`, 'info');
+                        logTex(`${current} → 高光贴图已按粗糙度近似处理`, 'info');
                     }
                 } else if ((cmd === 'norm' || cmd === 'map_Kn' || cmd === 'map_normal') && current) {
                     // 法线贴图是数据贴图，必须保持线性色彩空间
                     const texName = parts.slice(1).join(' ');
                     const match = findTextureSmart(texName, texMap, allTexNames);
                     if (match) {
-                        const tex = loadTextureByUrl(match);
-                        tex.colorSpace = THREE.NoColorSpace;
+                        const tex = loadTextureByUrl(match, false);
                         mats[current].normalMap = tex;
                         mats[current].needsUpdate = true;
                         matched++;
-                        logTex(` ${current} → 法线贴图已应用`, 'ok');
+                        logTex(`${current} → 法线贴图已应用`, 'ok');
                     }
                 } else if ((cmd === 'map_d' || cmd === 'map_alpha') && current) {
                     const texName = parts.slice(1).join(' ');
                     const match = findTextureSmart(texName, texMap, allTexNames);
                     if (match) {
-                        const tex = loadTextureByUrl(match);
-                        tex.colorSpace = THREE.NoColorSpace;
+                        const tex = loadTextureByUrl(match, false);
                         mats[current].alphaMap = tex;
                         mats[current].transparent = true;
                         mats[current].needsUpdate = true;
                         matched++;
-                        logTex(` ${current} → alpha 贴图已应用`, 'ok');
+                        logTex(`${current} → alpha 贴图已应用`, 'ok');
                     }
                 } else if (cmd === 'Ke' && current) {
                     const r = parseFloat(parts[1]);
@@ -1009,8 +1067,7 @@
                     const texName = parts.slice(1).join(' ');
                     const match = findTextureSmart(texName, texMap, allTexNames);
                     if (match) {
-                        const tex = loadTextureByUrl(match);
-                        tex.colorSpace = THREE.SRGBColorSpace;
+                        const tex = loadTextureByUrl(match, true);
                         mats[current].emissiveMap = tex;
                         mats[current].needsUpdate = true;
                         matched++;
@@ -1019,6 +1076,20 @@
             }
 
             return { materials: mats, matched };
+        }
+
+        let wireframe = false;
+
+        function applyWireframe(model) {
+            if (!model) return;
+            model.traverse(child => {
+                if (!child.isMesh) return;
+                const mats = Array.isArray(child.material) ? child.material : [child.material];
+                for (const m of mats) {
+                    if (m) m.wireframe = wireframe;
+                }
+            });
+            invalidate();
         }
 
         function applyMaterials(obj, mats) {
@@ -1048,7 +1119,7 @@
                                 const key = matName || '(未命名)';
                                 if (!warned.has(key)) {
                                     warned.add(key);
-                                    logTex(`⚠️ 材质 "${key}" 未在 MTL 中找到，已套用第一个材质 "${keys[0]}"`, 'fail');
+                                    logTex(`材质 "${key}" 未在 MTL 中找到，已套用第一个材质 "${keys[0]}"`, 'fail');
                                 }
                             }
                         }
@@ -1099,14 +1170,85 @@
             autoRotate = !autoRotate;
             controls.autoRotate = autoRotate;
             controls.autoRotateSpeed = 2.0;
-            btnAuto.classList.toggle('active');
-            btnAuto.textContent = autoRotate ? '⏸ 暂停' : ' 旋转';
+            btnAuto.classList.toggle('on', autoRotate);
         });
 
         // ---- 贴图调试按钮 ----
         btnDebug.addEventListener('click', () => {
-            texLog.classList.toggle('show');
-            btnDebug.textContent = texLog.classList.contains('show') ? ' 隐藏' : ' 贴图';
+            const on = texLog.classList.toggle('show');
+            btnDebug.classList.toggle('on', on);
+        });
+
+        // ---- 网格开关 ----
+        btnGrid.addEventListener('click', () => {
+            grid.visible = !grid.visible;
+            btnGrid.classList.toggle('on', grid.visible);
+            invalidate();
+        });
+
+        // ---- 线框 ----
+        btnWire.addEventListener('click', () => {
+            wireframe = !wireframe;
+            btnWire.classList.toggle('on', wireframe);
+            applyWireframe(currentModel);
+        });
+
+        // ---- 截图 ----
+        btnShot.addEventListener('click', () => {
+            if (!currentModel) {
+                setStatus('先加载一个模型', 'warning');
+                return;
+            }
+            renderer.render(scene, camera);
+            const url = renderer.domElement.toDataURL('image/png');
+            const a = document.createElement('a');
+            const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+            a.download = 'web3d-' + stamp + '.png';
+            a.href = url;
+            a.click();
+            setStatus('已保存截图', 'idle');
+        });
+
+        // ---- 全屏 ----
+        btnFull.addEventListener('click', () => {
+            if (!document.fullscreenElement) {
+                (document.documentElement.requestFullscreen || function () {}).call(document.documentElement);
+            } else {
+                (document.exitFullscreen || function () {}).call(document);
+            }
+        });
+
+        // ---- 拖拽加载 ----
+        ['dragenter', 'dragover'].forEach(ev => {
+            window.addEventListener(ev, (e) => {
+                e.preventDefault();
+                document.body.classList.add('dragging');
+            });
+        });
+        ['dragleave', 'drop'].forEach(ev => {
+            window.addEventListener(ev, (e) => {
+                e.preventDefault();
+                if (ev === 'dragleave' && e.relatedTarget) return;
+                document.body.classList.remove('dragging');
+            });
+        });
+        window.addEventListener('drop', (e) => {
+            const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+            if (f) loadZip(f);
+        });
+
+        // ---- 快捷键 ----
+        window.addEventListener('keydown', (e) => {
+            const tag = (e.target && e.target.tagName) || '';
+            if (tag === 'INPUT' || tag === 'TEXTAREA' || e.metaKey || e.ctrlKey || e.altKey) return;
+            const k = e.key.toLowerCase();
+            if (k === 'r') { btnReset.click(); }
+            else if (k === ' ') { e.preventDefault(); btnAuto.click(); }
+            else if (k === 'g') { btnGrid.click(); }
+            else if (k === 'w') { btnWire.click(); }
+            else if (k === 'l') { btnDebug.click(); }
+            else if (k === 's') { btnShot.click(); }
+            else if (k === 'f') { btnFull.click(); }
         });
 
         // ============================================================
@@ -1134,7 +1276,7 @@
         }
         animate();
 
-        setStatus(' 选择 ZIP 压缩包加载', 'idle');
+        setStatus('选择 ZIP 压缩包加载', 'idle');
         console.log('[Web3D Viewer] v1.0.1 | three r163 | CDN: ' + (window.__CDN_KEY__ || 'jsdelivr'));
         console.log(' 点击 "贴图" 查看纹理匹配日志');
     </script>
