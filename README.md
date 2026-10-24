@@ -2,6 +2,8 @@
 
 一个单文件的 Web 端 OBJ 模型查看器，基于 Three.js。不需要安装任何软件，用浏览器打开就能加载并预览 ZIP 包内的模型与贴图。
 
+**在线演示**：<https://userzz1145141919810-rgb.github.io/web-3d-viewer/> — 托管在 GitHub Pages，与仓库内 `index.html` 同步，打开即可使用。
+
 ## 功能
 
 - 单 HTML 文件，无后端，可本地打开或部署到静态托管
