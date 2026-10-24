@@ -11,6 +11,7 @@
 - 纹理格式：`jpg` / `jpeg` / `png` / `webp` / `bmp` / `gif` / `tga` / `dds`
 - 按 OBJ 的 `mtllib` 和 MTL 相对路径加载资源，同名贴图有歧义时明确报错
 - 支持多材质分组、多条 `mtllib` 声明；ZIP 包含多个 OBJ 时可选择模型
+- OBJ 在内嵌 Worker 中解析，解压、解析和贴图加载期间可取消并保留旧模型
 - 移动端触控操作，适配高 DPI 屏幕
 - 顶点数与三角面数统计
 - 贴图匹配日志，便于排查材质丢失
@@ -59,7 +60,7 @@ model.zip
 - Three.js 默认从 jsDelivr 加载；若访问不了，在地址后加 `?cdn=unpkg` 或 `?cdn=npmmirror` 切换源（加载失败时页面也会给出可点的切换链接）
 - ZIP 上限 300 MiB、10000 个文件；实际读取资源单文件上限 128 MiB，总量上限 600 MiB，涵盖 OBJ、MTL 和贴图
 - 唯一纹理的基础像素总量上限 32 MiPixels；纹理任一维度不得超过设备 `maxTextureSize`。这些限制不能保证任意设备不会内存不足：图片解码、OBJ 解析和 GPU 分配仍可能产生额外峰值
-- OBJ 仍在主线程解析，大文件解析期间可能短暂阻塞交互
+- OBJ 在 Worker 中解析，限制 300 万渲染顶点、10000 个对象、20000 个材质分组和 256 MiB 几何缓冲区。几何预算在官方解析器返回后检查，不能消除解析阶段的内存峰值；GPU 上传和场景重建仍可能短暂占用主线程
 - MTL 使用官方 `MTLLoader` 与 `MeshPhongMaterial`，支持 `Kd` / `Ks` / `Ns` / `d` / `Tr`、颜色/高光/法线/凹凸/透明/自发光贴图及 `-s` / `-o` / `-bm`。`-s`、`-o` 请提供三个分量；不保证支持全部扩展
 - 多个材质库请分别使用一条 `mtllib` 声明；引用的材质名称应唯一
 - DDS 依赖设备支持相应压缩纹理格式
@@ -75,6 +76,8 @@ model.zip
 - **纹理尺寸保护**：超出设备尺寸或像素预算时明确拒绝；不通过关闭 mipmap 掩盖无效尺寸。
 - **相机适配**：按模型包围球和水平/垂直视角计算距离，裁剪面与缩放范围随模型尺度调整。
 - **截图**：导出前即时渲染并使用 `toBlob()`，无需常驻保留绘制缓冲区。
+- **后台解析**：Worker 使用锁定版本官方 OBJLoader；输入 ArrayBuffer 和输出 TypedArray 缓冲区通过 transfer list 转移。包围盒、包围球和坐标有效性检查也在 Worker 中完成。
+- **取消任务**：解析中止会终止 Worker；解压流暂停并释放本轮资源；无法立即中断的浏览器图片解码在迟到回调中清理，不再提交模型。
 
 ## 浏览器要求
 
@@ -88,18 +91,22 @@ model.zip
 
 ## 开发与验证
 
-交付文件仍为 `index.html`，无需构建。开发测试需要 Node.js 22+：
+用户打开仓库中的 `index.html` 即可使用，无需安装或构建。开发源码位于 `src/viewer.html` 和 `src/obj-worker.js`，需要 Node.js 22+：
 
 ```sh
 npm ci
+npm run build
 npm test
+npm run check:build
 ```
 
 默认使用本机 Edge。其他环境可安装 Playwright Chrome 并设置 `BROWSER_CHANNEL=chrome`。测试使用锁定版本的官方 Three.js、JSZip 包响应 CDN 请求，实际运行 WebGL、加载器和 ZIP 解压，不依赖外部 CDN 可用性。
 
-浏览器控制台执行 `web3d.getDiagnostics()` 可读取 GPU 资源计数、绘制帧数、材质分组、纹理参数和相机信息；返回的是诊断快照。
+`npm run build` 用 esbuild 把 Worker 及其官方依赖内嵌到根目录 `index.html`，并保留 Three.js 许可文本。请编辑 `src/` 中的源码并提交构建产物；`check:build` 检查产物是否与源码一致。内嵌 Worker 无需独立网络请求，本地 file:// 和静态托管均可使用。
 
-测试覆盖多材质、相对路径、UV 参数、纹理共享、失败清理、多模型选择、取消、静止调度、连续加载、截图内容和超限 OBJ。后续研究记录见 [REVIEW.md](REVIEW.md)。
+浏览器控制台执行 `web3d.getDiagnostics()` 可读取 GPU 资源计数、绘制帧数、材质分组、纹理参数和相机信息；`workerRunning` 与 `lastParse` 提供 Worker 状态、解析耗时、重建耗时和几何大小。返回的是诊断快照。
+
+测试覆盖多材质、相对路径、UV 参数、纹理共享、失败清理、多模型选择、取消、静止调度、连续加载、截图内容、超限 OBJ、Worker 解析响应性与本地单文件打开。后续研究记录见 [REVIEW.md](REVIEW.md)。
 
 ## 开发日志
 

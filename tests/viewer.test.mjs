@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { readFile, mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { chromium } from 'playwright';
 import JSZip from 'jszip';
 
@@ -27,7 +28,7 @@ after(async () => {
     await new Promise(done => server?.close(done));
 });
 
-async function open(t, viewport = { width: 900, height: 700 }) {
+async function open(t, viewport = { width: 900, height: 700 }, url = base) {
     const page = await browser.newPage({ viewport });
     t.after(() => page.close());
     const errors = [];
@@ -43,7 +44,7 @@ async function open(t, viewport = { width: 900, height: 700 }) {
         else throw new Error(`Unexpected request: ${url}`);
         await route.fulfill({ body: await readFile(file), contentType: 'text/javascript', headers: { 'Access-Control-Allow-Origin': '*' } });
     });
-    await page.goto(base);
+    await page.goto(url);
     await page.waitForFunction(() => !!window.web3d);
     return page;
 }
@@ -210,4 +211,102 @@ test('解压时拒绝超过单文件预算的 OBJ', async t => {
     const status = await upload(page, { 'large.obj': '#'.repeat(128 * 1024 * 1024 + 1) });
     assert.match(status, /解压资源超限/);
     assert.equal((await diagnostics(page)).blobUrls, 0);
+});
+
+function manyFaces(count) {
+    const side = Math.ceil(Math.sqrt(count / 2));
+    const lines = [];
+    for (let y = 0; y <= side; y++) {
+        for (let x = 0; x <= side; x++) lines.push(`v ${x} ${y} 0`);
+    }
+    let faces = 0;
+    for (let y = 0; y < side && faces < count; y++) {
+        for (let x = 0; x < side && faces < count; x++) {
+            const a = y * (side + 1) + x + 1;
+            const b = a + 1, c = a + side + 1, d = c + 1;
+            lines.push(`f ${a} ${b} ${c}`); faces++;
+            if (faces < count) { lines.push(`f ${b} ${d} ${c}`); faces++; }
+        }
+    }
+    return lines.join('\n');
+}
+
+test('30 万面在 Worker 解析，主线程定时器继续执行', async t => {
+    const page = await open(t);
+    await page.evaluate(() => {
+        window.workerTicks = 0;
+        window.tickTimer = setInterval(() => {
+            if (window.web3d.getDiagnostics().lastParse?.state === 'parsing') window.workerTicks++;
+        }, 10);
+    });
+    const status = await upload(page, { 'large.obj': manyFaces(300000) });
+    assert.match(status, /0 材质/);
+    const ticks = await page.evaluate(() => { clearInterval(window.tickTimer); return window.workerTicks; });
+    const d = await diagnostics(page);
+    assert.equal(d.lastParse.state, 'complete');
+    assert.equal(d.lastParse.vertices, 900000);
+    assert.equal(d.lastParse.geometryBytes, 900000 * 6 * 4);
+    assert.equal(d.workerRunning, false);
+    assert.ok(ticks > 0, '解析期间主线程应能运行定时器');
+    assert.equal(await page.locator('#tri-count').textContent(), '300,000');
+    t.diagnostic(JSON.stringify({ ticksDuringParsing: ticks, ...d.lastParse }));
+});
+
+test('解析期间取消会终止 Worker，保留旧模型并允许再次加载', async t => {
+    const page = await open(t);
+    await upload(page, { 'old.obj': triangle });
+    await page.waitForFunction(() => !window.web3d.getDiagnostics().scheduled);
+    const previous = await diagnostics(page);
+    const zip = new JSZip();
+    zip.file('large.obj', manyFaces(900000));
+    await page.locator('#zip-input').setInputFiles({ name: 'large.zip', mimeType: 'application/zip', buffer: await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }) });
+    await page.waitForFunction(() => window.web3d.getDiagnostics().lastParse?.state === 'parsing');
+    const start = Date.now();
+    await page.locator('#btn-cancel').click();
+    await page.waitForFunction(() => !window.web3d.getDiagnostics().loading);
+    const d = await diagnostics(page);
+    assert.equal(d.lastParse.state, 'cancelled');
+    assert.equal(d.workerRunning, false);
+    assert.deepEqual(d.meshes, previous.meshes);
+    assert.deepEqual(d.memory, previous.memory);
+    assert.equal(d.blobUrls, 0);
+    assert.match(await page.locator('#file-name').textContent(), /old.obj/);
+    assert.match(await page.locator('#status-text').textContent(), /已取消/);
+    t.diagnostic(`Cancellation settled in ${Date.now() - start} ms`);
+    assert.match(await upload(page, { 'next.obj': triangle }), /0 材质/);
+});
+
+test('Worker 拒绝对象数超限及无效坐标，之后可恢复', async t => {
+    const page = await open(t);
+    const objects = 'v 0 0 0\nv 1 0 0\nv 0 1 0\n' + Array.from({ length: 10001 }, (_, i) => `o part${i}\nf 1 2 3\n`).join('');
+    assert.match(await upload(page, { 'objects.obj': objects }), /几何体超限/);
+    assert.equal((await diagnostics(page)).workerRunning, false);
+    assert.match(await upload(page, { 'invalid.obj': 'v NaN 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3' }), /无效/);
+    assert.match(await upload(page, { 'valid.obj': triangle }), /0 材质/);
+});
+
+test('解压过程中取消释放任务并保留旧模型', async t => {
+    const page = await open(t);
+    await upload(page, { 'old.obj': triangle });
+    const zip = new JSZip();
+    zip.file('large.obj', '#'.repeat(64 * 1024 * 1024));
+    await page.locator('#zip-input').setInputFiles({ name: 'large.zip', mimeType: 'application/zip', buffer: await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }) });
+    await page.locator('#btn-cancel').click();
+    await page.waitForFunction(() => !window.web3d.getDiagnostics().loading);
+    assert.match(await page.locator('#status-text').textContent(), /已取消/);
+    assert.match(await page.locator('#file-name').textContent(), /old.obj/);
+    assert.equal((await diagnostics(page)).workerRunning, false);
+    assert.match(await upload(page, { 'next.obj': triangle }), /0 材质/);
+});
+
+test('本地单 HTML 使用内嵌 Worker；保留线、点、顶点颜色和平滑状态', async t => {
+    const page = await open(t, undefined, pathToFileURL(resolve(root, 'index.html')).href);
+    const obj = 'v 0 0 0 1 0 0\nv 1 0 0 0 1 0\nv 0 1 0 0 0 1\no face\ns off\nf 1 2 3\no line\nl 1 2\no points\np 3\n';
+    assert.match(await upload(page, { 'primitives.obj': obj }), /0 材质/);
+    const d = await diagnostics(page);
+    assert.equal(d.lastParse.state, 'complete');
+    assert.deepEqual(d.primitives.map(item => item.type), ['Mesh', 'LineSegments', 'Points']);
+    assert.deepEqual(d.primitives.map(item => item.vertices), [3, 2, 1]);
+    assert.equal(d.meshes[0].materials[0].flatShading, true);
+    assert.equal(d.meshes[0].materials[0].vertexColors, true);
 });
